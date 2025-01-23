@@ -1,12 +1,7 @@
 package com.example.demo
 
-import com.example.demo.enums.Role
 import jakarta.persistence.*
-import jakarta.persistence.GeneratedValue
-import jakarta.persistence.Id
-import jakarta.persistence.MappedSuperclass
 import org.hibernate.annotations.ColumnDefault
-import org.hibernate.internal.util.StringHelper
 import org.springframework.data.annotation.CreatedBy
 import org.springframework.data.annotation.CreatedDate
 import org.springframework.data.annotation.LastModifiedBy
@@ -31,8 +26,8 @@ class User(
     val username: String,
     val phoneNumber: String,
     var password: String,
-    @Enumerated(EnumType.STRING) var role: Role,
-    @OneToMany(fetch = FetchType.EAGER) @JoinColumn(name = "address_id") private var addresses: List<Address> = mutableListOf()
+    @Enumerated(EnumType.STRING) var role: Roles,
+    @OneToMany(mappedBy = "user", fetch = FetchType.EAGER) private var addresses: List<Address> = mutableListOf()
 ) : BaseEntity()
 
 @Entity
@@ -43,7 +38,9 @@ class Address(
     val state: String,
     val postalCode:String,
     val longitude: Float,
-    val latitude: Float
+    val latitude: Float,
 
+    @ManyToOne @JoinColumn(name = "user_id") private val user: User? = null
 ) : BaseEntity()
+
 

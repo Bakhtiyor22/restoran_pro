@@ -11,6 +11,16 @@ import org.springframework.data.jpa.repository.support.SimpleJpaRepository
 import org.springframework.data.repository.NoRepositoryBean
 import org.springframework.data.repository.findByIdOrNull
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.context.annotation.Configuration
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories
+import org.springframework.stereotype.Repository
+
+@Configuration
+@EnableJpaRepositories(
+    basePackages = ["com.example.demo"],
+    repositoryBaseClass = BaseRepositoryImpl::class
+)
+class JpaConfig
 
 @NoRepositoryBean
 interface BaseRepository<T : BaseEntity> : JpaRepository<T, Long>, JpaSpecificationExecutor<T> {
@@ -37,7 +47,8 @@ class BaseRepositoryImpl<T : BaseEntity>(
     override fun trashList(ids: List<Long>): List<T> = ids.map { trash(it) }
 }
 
-
+@Repository
 interface UserRepository : BaseRepository<User> {
-    override fun findAllNotDeleted(): List<User>
+    fun findByUsername(username: String): User?
+    fun findByPhoneNumber(phoneNumber: String): User?
 }

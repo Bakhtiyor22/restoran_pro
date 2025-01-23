@@ -4,7 +4,6 @@ import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.util.*
 
-
 fun Double.formatWithSpace(): String {
     val symbols = DecimalFormatSymbols(Locale.getDefault()).apply {
         groupingSeparator = ' ' // Space for thousand separator
