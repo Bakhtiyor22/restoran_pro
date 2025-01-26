@@ -1,8 +1,9 @@
 package com.example.demo
 
+data class AuthDto(val phoneNumber: String)
+
 data class UserDto(
     val id: Long?,
-    val username: String,
     val phoneNumber: String,
     val role: String,
     val addresses: List<AddressDto>

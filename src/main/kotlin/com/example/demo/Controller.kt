@@ -1,6 +1,7 @@
 package com.example.demo
 
 import org.springframework.web.bind.annotation.*
+
 @RestController
 @RequestMapping("/api/auth")
 class AuthController(
@@ -8,19 +9,17 @@ class AuthController(
 ) {
 
     @PostMapping("/otp-login")
-    fun otpLogin(
-        @RequestParam username: String,
-        @RequestParam phoneNumber: String,
-        @RequestParam otp: String
-    ): String {
-        return authService.otpLogin(username, phoneNumber, otp)
+    fun otpLogin(@RequestParam phoneNumber: String, @RequestParam otp: String): String {
+        return authService.otpLogin(phoneNumber, otp)
+    }
+
+    @PostMapping("/request-otp")
+    fun requestOtp(@RequestParam phoneNumber: String): String {
+        return authService.requestOtp(phoneNumber)
     }
 
     @PostMapping("/login")
-    fun loginWithPassword(
-        @RequestParam phoneNumber: String,
-        @RequestParam password: String
-    ): String {
-        return authService.loginWithPassword(phoneNumber, password)
+    fun login(@RequestParam phoneNumber: String, @RequestParam password: String): String {
+        return authService.login(phoneNumber, password)
     }
 }

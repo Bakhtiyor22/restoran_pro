@@ -23,7 +23,6 @@ open class BaseEntity(
 @Entity
 @Table(name = "_user")
 class User(
-    val username: String,
     val phoneNumber: String,
     var password: String,
     @Enumerated(EnumType.STRING) var role: Roles,

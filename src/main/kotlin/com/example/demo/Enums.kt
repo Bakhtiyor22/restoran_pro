@@ -2,6 +2,6 @@ package com.example.demo
 
 enum class Roles {
     CUSTOMER,
-    Manager,
+    MANAGER,
     DEV
 }

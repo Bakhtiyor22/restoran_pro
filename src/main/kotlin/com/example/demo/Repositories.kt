@@ -49,6 +49,5 @@ class BaseRepositoryImpl<T : BaseEntity>(
 
 @Repository
 interface UserRepository : BaseRepository<User> {
-    fun findByUsername(username: String): User?
     fun findByPhoneNumber(phoneNumber: String): User?
 }

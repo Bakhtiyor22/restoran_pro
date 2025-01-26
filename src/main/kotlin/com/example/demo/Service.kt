@@ -1,43 +1,57 @@
 package com.example.demo
 
+import org.slf4j.LoggerFactory
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.security.core.userdetails.UserDetailsService
 import org.springframework.security.core.userdetails.UsernameNotFoundException
-import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
+import java.util.concurrent.ConcurrentHashMap
+
+interface OTPService {
+    fun generateOTP(phoneNumber: String): String
+    fun validateOTP(phoneNumber: String, otp: String): Boolean
+}
+
+interface  EskizService{
+    fun sendMessage(msg:String, phoneNumber: String):Boolean
+}
 
 @Service
 class AuthService(
     private val userRepository: UserRepository,
-    private val passwordEncoder: PasswordEncoder,
+    private val otpService: OTPService,
     private val jwtUtils: JwtUtils
 ) {
-    fun otpLogin(userName: String, phoneNumber: String, otp: String): String {
-        validatePhoneNumber(phoneNumber)
-        if (otp != "12345") {
-            throw IllegalArgumentException("Invalid OTP")
+
+    fun otpLogin(phoneNumber: String, otp: String): String {
+        val valid = otpService.validateOTP(phoneNumber, otp)
+        if (!valid) {
+            throw IllegalArgumentException("Invalid OTP!")
         }
         var user = userRepository.findByPhoneNumber(phoneNumber)
         if (user == null) {
             user = User(
-                username = userName,
                 phoneNumber = phoneNumber,
-                password = passwordEncoder.encode(""),
+                password = "",
                 role = Roles.CUSTOMER
             )
             userRepository.save(user)
         }
-        return jwtUtils.generateToken(user.username, user.role.name)
+        return jwtUtils.generateToken(user.phoneNumber, user.role.name)
     }
 
-    fun loginWithPassword(phoneNumber: String, password: String): String {
-        validatePhoneNumber(phoneNumber)
+    fun requestOtp(phoneNumber: String): String {
+        otpService.generateOTP(phoneNumber)
+        return "OTP sent, check your phone!"
+    }
+
+    fun login(phoneNumber: String, password: String): String {
         val user = userRepository.findByPhoneNumber(phoneNumber)
             ?: throw IllegalArgumentException("User not found")
-        if (!passwordEncoder.matches(password, user.password)) {
-            throw IllegalArgumentException("Invalid credentials")
+        if (user.password.isBlank()) {
+            throw IllegalArgumentException("No password set for this user. Please use OTP or set a password.")
         }
-        return jwtUtils.generateToken(user.username, user.role.name)
+        return jwtUtils.generateToken(phoneNumber, user.role.name)
     }
 }
 
@@ -73,3 +87,53 @@ class CustomUserDetailsService(
         )
     }
 }
+
+
+@Service
+class EskizImp:EskizService{
+    private  val logger = LoggerFactory.getLogger(javaClass)
+
+    override fun sendMessage(msg: String, phoneNumber: String): Boolean {
+        logger.info("Send message success , $phoneNumber , message : $msg")
+        return true
+    }
+}
+
+@Service
+class OTPServiceImpl(private val eskizService: EskizService) : OTPService {
+    private val logger = LoggerFactory.getLogger(javaClass)
+    private val otpStore = ConcurrentHashMap<String, String>()
+    private val otpTimestampStore = ConcurrentHashMap<String, Long>()
+    private val otpValidityDuration = 60 * 1000
+
+    override fun generateOTP(phoneNumber: String): String {
+        val otp = (100000..999999).random().toString()
+        otpStore[phoneNumber] = otp
+        otpTimestampStore[phoneNumber] = System.currentTimeMillis()
+        val message = "Your OTP is $otp"
+        eskizService.sendMessage(message, phoneNumber)
+        logger.info("Generated OTP=$otp for phoneNumber=$phoneNumber")
+        return otp
+    }
+
+    override fun validateOTP(phoneNumber: String, otp: String): Boolean {
+        val storedOtp = otpStore[phoneNumber]
+        val timestamp = otpTimestampStore[phoneNumber]
+        val currentTime = System.currentTimeMillis()
+
+        if (storedOtp == null || timestamp == null || currentTime - timestamp > otpValidityDuration) {
+            otpStore.remove(phoneNumber)
+            otpTimestampStore.remove(phoneNumber)
+            return false
+        }
+
+        return (storedOtp == otp).also {
+            logger.info("Validate OTP=$otp for phoneNumber=$phoneNumber => $it")
+            if (it) {
+                otpStore.remove(phoneNumber)
+                otpTimestampStore.remove(phoneNumber)
+            }
+        }
+    }
+}
+
