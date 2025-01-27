@@ -1,5 +1,10 @@
 package com.example.demo
 
+data class BaseMessage(
+    private val code: Int,
+    private val message: String?,
+)
+
 data class AuthDto(val phoneNumber: String)
 
 data class UserDto(
