@@ -33,7 +33,6 @@ class User(
 ) : BaseEntity()
 
 @Entity
-@Table(name = "addresses")
 class Address(
     val addressLine: String,
     val city: String,

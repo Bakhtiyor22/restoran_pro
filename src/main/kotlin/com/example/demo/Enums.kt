@@ -19,3 +19,7 @@ enum class ErrorCode(val code: Int) {
 enum class UserStatus {
     EXISTS, CREATED, NOT_FOUND
 }
+
+enum class MessageKey {
+    USER_NOT_FOUND,
+}

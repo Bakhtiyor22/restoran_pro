@@ -9,7 +9,7 @@ class AuthController(
 ) {
 
     @PostMapping("/otp-login")
-    fun otpLogin(@RequestBody otpLogin: OtpLogin)= authService.otpLogin(otpLogin.phoneNumber, otpLogin.otp)
+    fun otpLogin(@RequestBody otpLogin: OtpLogin)= authService.otpLogin(otpLogin)
 
 
     @PostMapping("/request-otp")

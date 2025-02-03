@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 
 interface OTPService {
-    fun generateOTP(phoneNumber: String): String
+    fun generateOTP(phoneNumber: String): Long
     fun validateOTP(phoneNumber: String, otpCode: String, otpId: Long): Boolean
 }
 
@@ -22,9 +22,14 @@ interface EskizService {
 }
 
 interface AuthService {
-    fun requestOtp(phoneNumber: String): BaseMessage
-    fun otpLogin(phoneNumber: String, otpCode: String): TokenResponse
+    fun requestOtp(phoneNumber: String): OtpIdResponse
+    fun otpLogin(otpLogin: OtpLogin): TokenResponse
     fun login(request: LoginRequest): TokenResponse
+}
+
+
+interface MessageSourceService {
+    fun getMessage(key: MessageKey): String
 }
 
 @Service
@@ -41,13 +46,15 @@ class AuthServiceImpl(
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    override fun requestOtp(phoneNumber: String): BaseMessage {
+    override fun requestOtp(phoneNumber: String): OtpIdResponse {
         val locale = LocaleContextHolder.getLocale()
 
-        customValidator.notBlank(object : FieldName { override val name = "phoneNumber" }, phoneNumber)
-        if (!validatePhoneNumber(phoneNumber)) {
-            throw InvalidPhoneNumber()
-        }
+        customValidator.notBlank(object : FieldName {
+            override val name = "phoneNumber"
+        }, phoneNumber)
+
+        if (!validatePhoneNumber(phoneNumber)) throw InvalidPhoneNumber()
+
 
         val foundUser = userRepository.findByPhoneNumber(phoneNumber)
         val userStatus = when {
@@ -60,22 +67,20 @@ class AuthServiceImpl(
 
         val messageKey = "otp.register"
         val messageText = messageSource.getMessage(messageKey, null, locale)
-        return BaseMessage(code = 0, message = "$messageText. smsId=$otpId, userStatus=$userStatus")
+        return OtpIdResponse(otpId, messageText)
+//        return BaseMessage(code = 0, message = "$messageText. smsId=$otpId, userStatus=$userStatus")
     }
 
-    override fun otpLogin(phoneNumber: String, otpCode: String): TokenResponse {
+    override fun otpLogin(otpLogin: OtpLogin): TokenResponse {
         val locale = LocaleContextHolder.getLocale()
 
-        customValidator.notBlank(object : FieldName { override val name = "phoneNumber" }, phoneNumber)
-        if (!validatePhoneNumber(phoneNumber)) {
-            throw InvalidPhoneNumber()
-        }
-        customValidator.notBlank(object : FieldName { override val name = "otp" }, otpCode)
+        val otpEntity = otpRepository.findByIdAndDeletedFalse(otpLogin.otpId) ?: throw ResourceNotFoundException()
+
 
         val smsRecord = otpRepository.findTopByPhoneNumberOrderByCreatedDateDesc(phoneNumber)
             ?: throw ResourceNotFoundException()
 
-        val validOtp = otpService.validateOTP(phoneNumber, otpCode, smsRecord.id!!)
+        val validOtp =K otpService.validateOTP(phoneNumber, otpCode, smsRecord.id!!)
         if (!validOtp) {
             val invalidKey = "INVALID_INPUT"
             val invalidMsg = messageSource.getMessage(invalidKey, null, locale)
@@ -104,11 +109,14 @@ class AuthServiceImpl(
     override fun login(request: LoginRequest): TokenResponse {
         val locale = LocaleContextHolder.getLocale()
 
-        customValidator.notBlank(object : FieldName { override val name = "phoneNumber" }, request.phone)
-        customValidator.notBlank(object : FieldName { override val name = "password" }, request.password)
-        if (!validatePhoneNumber(request.phone)) {
-            throw InvalidPhoneNumber()
-        }
+        customValidator.notBlank(object : FieldName {
+            override val name = "phoneNumber"
+        }, request.phone)
+        customValidator.notBlank(object : FieldName {
+            override val name = "password"
+        }, request.password)
+        if (!validatePhoneNumber(request.phone)) throw InvalidPhoneNumber()
+
 
         val user = userRepository.findByPhoneNumber(request.phone)
             ?: throw UserNotFoundException(messageSource)
@@ -141,8 +149,8 @@ class CustomUserDetailsService(
 }
 
 @Service
-class EskizImp:EskizService{
-    private  val logger = LoggerFactory.getLogger(javaClass)
+class EskizImp : EskizService {
+    private val logger = LoggerFactory.getLogger(javaClass)
 
     override fun sendMessage(msg: String, phoneNumber: String): Boolean {
         logger.info("Send message success , $phoneNumber , message : $msg")
@@ -156,14 +164,15 @@ class EskizImp:EskizService{
 class OTPServiceImpl(
     private val eskizService: EskizService,
     private val messageSource: MessageSource,
-    private val otpRepository: OtpRepository
+    private val otpRepository: OtpRepository,
+    private val passwordEncoder: PasswordEncoder
 ) : OTPService {
 
     private val logger = LoggerFactory.getLogger(javaClass)
     private val requestCounts = ConcurrentHashMap<String, Int>()
     private val MAX_ATTEMPTS = 3
 
-    override fun generateOTP(phoneNumber: String): String {
+    override fun generateOTP(phoneNumber: String): Long {
         val attempts = requestCounts.getOrDefault(phoneNumber, 0)
         if (attempts >= MAX_ATTEMPTS) {
             throw InvalidInputException()
@@ -175,7 +184,7 @@ class OTPServiceImpl(
         val now = LocalDateTime.now()
         val entity = OtpEntity(
             phoneNumber = phoneNumber,
-            otpLogin = otpCode,
+            otpLogin = passwordEncoder.encode(otpCode),
             sentTime = now,
             expiredAt = now.plusMinutes(1), // example: OTP valid for 5 minutes
             checked = false
@@ -186,7 +195,7 @@ class OTPServiceImpl(
         eskizService.sendMessage(message, phoneNumber)
         logger.info("Generated OTP=$otpCode for phoneNumber=$phoneNumber, DB ID=${savedRecord.id}")
 
-        return savedRecord.id!!.toString()
+        return savedRecord.id!!
     }
 
     override fun validateOTP(phoneNumber: String, otpCode: String, otpId: Long): Boolean {

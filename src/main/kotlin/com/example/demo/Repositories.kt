@@ -55,7 +55,7 @@ interface UserRepository : BaseRepository<User> {
 }
 
 @Repository
-interface OtpRepository : JpaRepository<OtpEntity, Long> {
+interface OtpRepository : BaseRepository<OtpEntity> {
     fun findByIdAndPhoneNumberAndDeletedFalse(id: Long, phoneNumber: String): OtpEntity?
     fun findTopByPhoneNumberOrderByCreatedDateDesc(phoneNumber: String): OtpEntity?
 }

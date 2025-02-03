@@ -29,7 +29,7 @@ class JwtUtils {
     private val key = Keys.secretKeyFor(SignatureAlgorithm.HS256)
 
     fun generateToken(user: User): TokenResponse {
-      val   token = Jwts.builder()
+        val token = Jwts.builder()
             .setSubject(user.phoneNumber)
             .claim("role", user.role.name)
             .claim("userId", user.id)
@@ -38,7 +38,7 @@ class JwtUtils {
             .signWith(key)
             .compact()
 
-        return TokenResponse(token, token,3600 )
+        return TokenResponse(token, token, 3600)
     }
 
     fun validateToken(token: String): Boolean {
@@ -59,7 +59,7 @@ class JwtUtils {
 }
 
 @Component
-class CustomValidator{
+class CustomValidator {
     private val AT_LEAST_ONE_UPPERCASE_LETTER_LOWERCASE_LETTER_NUMBER_AND_SPECIAL_CHARACTER =
         "^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$"
 
@@ -88,8 +88,8 @@ class CustomValidator{
     }
 }
 
-class DateTimeUtil{
-    fun getCurrentTimeZone():ZonedDateTime {
+class DateTimeUtil {
+    fun getCurrentTimeZone(): ZonedDateTime {
         return ZonedDateTime.now(ZoneId.of(System.getenv("TIMEZONE")))
     }
 

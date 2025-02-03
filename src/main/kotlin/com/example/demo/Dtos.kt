@@ -1,15 +1,19 @@
 package com.example.demo
 
+import jakarta.validation.constraints.NotBlank
+
 data class BaseMessage(
     private val code: Int,
     private val message: String?,
 )
 
-data class OtpRequest(val phoneNumber: String = "")
+data class OtpRequest(
+    @NotBlank val phoneNumber: String = ""
+)
 
-data class OtpLogin(val phoneNumber: String = "", val otp : String)
+data class OtpLogin(val phoneNumber: String, val otp: String, val otpId: Long)
 
-data class  OtpIdResponse(val smsCodeId: Long, val message: String?)
+data class OtpIdResponse(val smsCodeId: Long, val message: String?)
 
 data class UserDto(
     val id: Long?,
@@ -30,12 +34,12 @@ data class AddressDto(
 
 
 data class LoginRequest(
-    val phone:String,
-    val password:String
+    val phone: String,
+    val password: String
 )
 
 data class TokenResponse(
-    val accessToken:String,
-    val refreshToken:String = "",
-    val expired:Int // second
+    val accessToken: String,
+    val refreshToken: String = "",
+    val expired: Int // second
 )
