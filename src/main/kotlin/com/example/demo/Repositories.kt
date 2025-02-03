@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories
 import org.springframework.stereotype.Repository
+import java.util.*
 
 @Configuration
 @EnableJpaRepositories(
@@ -50,4 +51,11 @@ class BaseRepositoryImpl<T : BaseEntity>(
 @Repository
 interface UserRepository : BaseRepository<User> {
     fun findByPhoneNumber(phoneNumber: String): User?
+    fun findByRole(role: Roles): User?
+}
+
+@Repository
+interface OtpRepository : JpaRepository<OtpEntity, Long> {
+    fun findByIdAndPhoneNumberAndDeletedFalse(id: Long, phoneNumber: String): OtpEntity?
+    fun findTopByPhoneNumberOrderByCreatedDateDesc(phoneNumber: String): OtpEntity?
 }

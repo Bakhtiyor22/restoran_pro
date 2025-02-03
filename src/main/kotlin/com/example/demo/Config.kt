@@ -4,8 +4,12 @@ import jakarta.servlet.FilterChain
 import jakarta.servlet.ServletException
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import org.springframework.boot.CommandLineRunner
+import org.springframework.context.MessageSource
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import org.springframework.context.support.ResourceBundleMessageSource
 import org.springframework.security.authentication.AuthenticationManager
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider
 import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder
@@ -19,6 +23,38 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.stereotype.Component
 import org.springframework.web.filter.OncePerRequestFilter
 import java.io.IOException
+
+
+@Configuration
+class AppInit(
+    private val userRepository: UserRepository,
+    private val passwordEncoder: PasswordEncoder
+) {
+
+    @Bean
+    fun init() = CommandLineRunner {
+        val managerRole = Roles.MANAGER
+        val devRole = Roles.DEV
+
+        if (userRepository.findByRole(managerRole) == null) {
+            val manager = User(
+                phoneNumber = "+998900000001",
+                password = passwordEncoder.encode("manager123"),
+                role = managerRole
+            )
+            userRepository.save(manager)
+        }
+
+        if (userRepository.findByRole(devRole) == null) {
+            val dev = User(
+                phoneNumber = "+998900000002",
+                password = passwordEncoder.encode("dev123"),
+                role = devRole
+            )
+            userRepository.save(dev)
+        }
+    }
+}
 
 @Configuration
 @EnableWebSecurity
@@ -49,7 +85,7 @@ class SecurityConfig(
         http
             .csrf { it.disable() }
             .authorizeHttpRequests { auth ->
-                auth.requestMatchers("/api/auth/otp-login", "/api/auth/request-otp", "/api/auth/login").permitAll()
+                auth.requestMatchers("/api/v1/auth/**").permitAll()
                 auth.anyRequest().authenticated()
             }
             .authenticationProvider(authenticationProvider())
@@ -81,5 +117,25 @@ class JwtAuthFilter(
             }
         }
         filterChain.doFilter(request, response)
+    }
+}
+
+@Configuration
+class MessageSourceConfig {
+
+    @Bean
+    fun messageSource(): MessageSource {
+        val messageSource = ReloadableResourceBundleMessageSource()
+        messageSource.setBasenames("classpath:error")
+        messageSource.setDefaultEncoding("UTF-8")
+        return messageSource
+    }
+
+    @Bean
+    fun messageSource1(): ResourceBundleMessageSource {
+        val messageSource = ResourceBundleMessageSource()
+        messageSource.setBasenames("error")
+        messageSource.setDefaultEncoding("UTF-8")
+        return messageSource
     }
 }

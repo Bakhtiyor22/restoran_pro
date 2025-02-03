@@ -7,6 +7,9 @@ import org.springframework.data.annotation.CreatedDate
 import org.springframework.data.annotation.LastModifiedBy
 import org.springframework.data.annotation.LastModifiedDate
 import org.springframework.data.jpa.domain.support.AuditingEntityListener
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZonedDateTime
 import java.util.*
 
 @MappedSuperclass
@@ -21,7 +24,7 @@ open class BaseEntity(
 )
 
 @Entity
-@Table(name = "_user")
+@Table(name = "users")
 class User(
     val phoneNumber: String,
     var password: String,
@@ -30,7 +33,7 @@ class User(
 ) : BaseEntity()
 
 @Entity
-@Table(name = "address")
+@Table(name = "addresses")
 class Address(
     val addressLine: String,
     val city: String,
@@ -42,4 +45,12 @@ class Address(
     @ManyToOne @JoinColumn(name = "user_id") private val user: User? = null
 ) : BaseEntity()
 
-
+@Entity
+@Table(name = "otps")
+class OtpEntity(
+    val phoneNumber: String,
+    val otpLogin: String,
+    val sentTime: LocalDateTime,
+    val expiredAt: LocalDateTime,
+    var checked: Boolean
+) : BaseEntity()
