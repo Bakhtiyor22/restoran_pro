@@ -1,14 +1,12 @@
 package com.example.demo
 
 import jakarta.servlet.FilterChain
-import jakarta.servlet.ServletException
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.boot.CommandLineRunner
 import org.springframework.context.MessageSource
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import org.springframework.context.support.ResourceBundleMessageSource
 import org.springframework.security.authentication.AuthenticationManager
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider
@@ -22,7 +20,11 @@ import org.springframework.security.web.SecurityFilterChain
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter
 import org.springframework.stereotype.Component
 import org.springframework.web.filter.OncePerRequestFilter
-import java.io.IOException
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
+import org.springframework.web.servlet.i18n.AcceptHeaderLocaleResolver
+import org.springframework.web.servlet.i18n.LocaleChangeInterceptor
+import java.util.*
 
 
 @Configuration
@@ -38,6 +40,7 @@ class AppInit(
 
         if (userRepository.findByRole(managerRole) == null) {
             val manager = User(
+                username =  "Manager",
                 phoneNumber = "+998900000001",
                 password = passwordEncoder.encode("manager123"),
                 role = managerRole
@@ -47,6 +50,7 @@ class AppInit(
 
         if (userRepository.findByRole(devRole) == null) {
             val dev = User(
+                username = "DEV",
                 phoneNumber = "+998900000002",
                 password = passwordEncoder.encode("dev123"),
                 role = devRole
@@ -100,7 +104,8 @@ class JwtAuthFilter(
     private val jwtUtils: JwtUtils,
     private val userService: CustomUserDetailsService
 ) : OncePerRequestFilter() {
-    @Throws(ServletException::class, IOException::class)
+
+
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,
@@ -114,28 +119,41 @@ class JwtAuthFilter(
                 val userDetails = userService.loadUserByUsername(username)
                 val authToken = jwtUtils.getAuthentication(token, userDetails)
                 SecurityContextHolder.getContext().authentication = authToken
+                filterChain.doFilter(request, response)
+                return
             }
         }
         filterChain.doFilter(request, response)
     }
 }
 
+
 @Configuration
-class MessageSourceConfig {
+class AppConfig : WebMvcConfigurer {
 
     @Bean
     fun messageSource(): MessageSource {
-        val messageSource = ReloadableResourceBundleMessageSource()
-        messageSource.setBasenames("classpath:error")
-        messageSource.setDefaultEncoding("UTF-8")
-        return messageSource
+        val source = ResourceBundleMessageSource()
+        source.setBasenames("error")
+        source.setDefaultEncoding("UTF-8")
+        return source
     }
 
     @Bean
-    fun messageSource1(): ResourceBundleMessageSource {
-        val messageSource = ResourceBundleMessageSource()
-        messageSource.setBasenames("error")
-        messageSource.setDefaultEncoding("UTF-8")
-        return messageSource
+    fun localeResolver(): AcceptHeaderLocaleResolver {
+        val resolver = AcceptHeaderLocaleResolver()
+        resolver.setDefaultLocale(Locale.forLanguageTag("uz"))
+        return resolver
+    }
+
+    @Bean
+    fun localeChangeInterceptor(): LocaleChangeInterceptor {
+        val interceptor = LocaleChangeInterceptor()
+        interceptor.paramName = "lang"
+        return interceptor
+    }
+
+    override fun addInterceptors(registry: InterceptorRegistry) {
+        registry.addInterceptor(localeChangeInterceptor())
     }
 }

@@ -10,16 +10,11 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.*
-import java.util.regex.Pattern
-
-interface FieldName {
-    val name: String?
-}
 
 fun validatePhoneNumber(phoneNumber: String): Boolean {
     return try {
         phoneNumber.matches(Regex("^\\+998[0-9]{9}$"))
-    } catch (e: InvalidPhoneNumber) {
+    } catch (e: InvalidInputException) {
         false
     }
 }
@@ -55,36 +50,6 @@ class JwtUtils {
 
     fun getAuthentication(token: String, userDetails: UserDetails): UsernamePasswordAuthenticationToken {
         return UsernamePasswordAuthenticationToken(userDetails, null, userDetails.authorities)
-    }
-}
-
-@Component
-class CustomValidator {
-    private val AT_LEAST_ONE_UPPERCASE_LETTER_LOWERCASE_LETTER_NUMBER_AND_SPECIAL_CHARACTER =
-        "^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$"
-
-    fun notNull(fieldName: FieldName, value: Any?) {
-        if (value == null) {
-            throw ValidationException()
-        }
-    }
-
-    fun notBlank(fieldName: FieldName, value: String?) {
-        if (value == null || value.trim { it <= ' ' }.isEmpty()) {
-            throw ValidationException()
-        }
-    }
-
-    fun validatePasswordStrength(fieldName: FieldName?, value: String?) {
-        if (fieldName != null) {
-            matchesRegex(fieldName, value, AT_LEAST_ONE_UPPERCASE_LETTER_LOWERCASE_LETTER_NUMBER_AND_SPECIAL_CHARACTER)
-        }
-    }
-
-    fun matchesRegex(fieldName: FieldName, value: String?, regex: String?) {
-        if (value == null || !Pattern.matches(regex, value)) {
-            throw ValidationException()
-        }
     }
 }
 

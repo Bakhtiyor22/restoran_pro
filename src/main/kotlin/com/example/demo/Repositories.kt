@@ -14,7 +14,6 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories
 import org.springframework.stereotype.Repository
-import java.util.*
 
 @Configuration
 @EnableJpaRepositories(
@@ -52,10 +51,34 @@ class BaseRepositoryImpl<T : BaseEntity>(
 interface UserRepository : BaseRepository<User> {
     fun findByPhoneNumber(phoneNumber: String): User?
     fun findByRole(role: Roles): User?
+
 }
 
 @Repository
 interface OtpRepository : BaseRepository<OtpEntity> {
     fun findByIdAndPhoneNumberAndDeletedFalse(id: Long, phoneNumber: String): OtpEntity?
-    fun findTopByPhoneNumberOrderByCreatedDateDesc(phoneNumber: String): OtpEntity?
 }
+
+@Repository
+interface AddressRepository : BaseRepository<Address>
+
+@Repository
+interface RestaurantRepository : BaseRepository<Restaurant>
+
+@Repository
+interface MenuRepository : BaseRepository<Menu> {
+    fun findAllByRestaurantId(restaurantId: Long): List<Menu>
+}
+
+@Repository
+interface MenuItemRepository : BaseRepository<MenuItem> {
+    fun findAllByMenuId(menuId: Long): List<MenuItem>
+}
+
+@Repository
+interface OrderRepository : BaseRepository<Order> {
+    fun findAllByRestaurantId(restaurantId: Long): List<Order>
+}
+
+@Repository
+interface OrderItemRepository : BaseRepository<OrderItem>

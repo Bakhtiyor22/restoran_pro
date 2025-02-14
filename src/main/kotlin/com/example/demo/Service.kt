@@ -1,16 +1,19 @@
 package com.example.demo
 
+import jakarta.transaction.Transactional
 import org.slf4j.LoggerFactory
 import org.springframework.context.MessageSource
 import org.springframework.context.i18n.LocaleContextHolder
+import org.springframework.data.domain.Page
+import org.springframework.data.domain.Pageable
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.security.core.userdetails.UserDetailsService
 import org.springframework.security.core.userdetails.UsernameNotFoundException
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
+import java.math.BigDecimal
 import java.time.LocalDateTime
 import java.util.concurrent.ConcurrentHashMap
-
 
 interface OTPService {
     fun generateOTP(phoneNumber: String): Long
@@ -22,14 +25,38 @@ interface EskizService {
 }
 
 interface AuthService {
-    fun requestOtp(phoneNumber: String): OtpIdResponse
+    fun requestOtp(otpRequest: OtpRequest): OtpIdResponse
     fun otpLogin(otpLogin: OtpLogin): TokenResponse
     fun login(request: LoginRequest): TokenResponse
 }
 
-
 interface MessageSourceService {
     fun getMessage(key: MessageKey): String
+}
+
+interface UserService {
+    fun createUser(createUserRequest: CreateUserRequest): UserDTO
+    fun getAllUsers(pageable: Pageable): Page<UserDTO>
+    fun getUserById(id: Long): UserDTO?
+    fun updateUser(id: Long, updateUserRequest: UpdateUserRequest): UserDTO
+    fun deleteUser(id: Long)
+}
+
+
+interface RestaurantService {
+    fun create(request: CreateRestaurantRequest):BaseMessage
+}
+
+interface MenuService {
+    fun createMenu(createMenuRequest: createMenuRequest): MenuDTO
+    fun addMenuItem(menuId: Long,  addMenuItem: addMenuItem): MenuItemDTO
+    fun removeMenuItem(menuItemId: Long)
+    fun updateMenuItem(menuItemId: Long, addMenuItem: addMenuItem): MenuItemDTO
+}
+
+interface OrderService{
+    fun createOrder(customerId: Long, restaurantId: Long, createOrderRequest: createOrderRequest): OrderDTO
+    fun updateOrderStatus(orderId: Long, newStatus: OrderStatus): OrderDTO
 }
 
 @Service
@@ -38,23 +65,15 @@ class AuthServiceImpl(
     private val userRepository: UserRepository,
     private val otpRepository: OtpRepository,
     private val jwtUtils: JwtUtils,
-    private val customValidator: CustomValidator,
-    private val messageSource: MessageSource,
-    private val passwordEncoder: PasswordEncoder
-
+    private val passwordEncoder: PasswordEncoder,
+    private val messageSourceService: MessageSourceService
 ) : AuthService {
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    override fun requestOtp(phoneNumber: String): OtpIdResponse {
-        val locale = LocaleContextHolder.getLocale()
-
-        customValidator.notBlank(object : FieldName {
-            override val name = "phoneNumber"
-        }, phoneNumber)
-
-        if (!validatePhoneNumber(phoneNumber)) throw InvalidPhoneNumber()
-
+    override fun requestOtp(otpRequest: OtpRequest): OtpIdResponse {
+        val phoneNumber = otpRequest.phoneNumber
+        if (!validatePhoneNumber(phoneNumber)) throw RuntimeException(otpRequest.phoneNumber)
 
         val foundUser = userRepository.findByPhoneNumber(phoneNumber)
         val userStatus = when {
@@ -63,38 +82,26 @@ class AuthServiceImpl(
         }
 
         val otpId = otpService.generateOTP(phoneNumber)
-        logger.info("requestOtp => phone=$phoneNumber, userStatus=$userStatus, otpId=$otpId")
 
-        val messageKey = "otp.register"
-        val messageText = messageSource.getMessage(messageKey, null, locale)
-        return OtpIdResponse(otpId, messageText)
-//        return BaseMessage(code = 0, message = "$messageText. smsId=$otpId, userStatus=$userStatus")
+        val messageText = messageSourceService.getMessage(MessageKey.OTP_REQUEST)
+        return OtpIdResponse(otpId, messageText).also { logger.info("userStatus = $userStatus") }
     }
 
     override fun otpLogin(otpLogin: OtpLogin): TokenResponse {
-        val locale = LocaleContextHolder.getLocale()
-
-        val otpEntity = otpRepository.findByIdAndDeletedFalse(otpLogin.otpId) ?: throw ResourceNotFoundException()
-
-
-        val smsRecord = otpRepository.findTopByPhoneNumberOrderByCreatedDateDesc(phoneNumber)
-            ?: throw ResourceNotFoundException()
-
-        val validOtp =K otpService.validateOTP(phoneNumber, otpCode, smsRecord.id!!)
+        val validOtp = otpService.validateOTP(otpLogin.phoneNumber, otpLogin.otp, otpLogin.otpId)
         if (!validOtp) {
-            val invalidKey = "INVALID_INPUT"
-            val invalidMsg = messageSource.getMessage(invalidKey, null, locale)
-            throw InvalidInputException().also { logger.warn("OTP mismatch: $invalidMsg") }
+            throw InvalidInputException(otpLogin.otp)
         }
 
-        var user = userRepository.findByPhoneNumber(phoneNumber)
+        var user = userRepository.findByPhoneNumber(otpLogin.phoneNumber)
         val userStatus = when {
             user != null -> UserStatus.EXISTS
             else -> UserStatus.CREATED
         }
         if (user == null) {
             user = User(
-                phoneNumber = phoneNumber,
+                username = "",
+                phoneNumber = otpLogin.phoneNumber,
                 password = "",
                 role = Roles.CUSTOMER
             )
@@ -102,33 +109,21 @@ class AuthServiceImpl(
         }
 
         val tokenResponse = jwtUtils.generateToken(user)
-        logger.info("otpLogin => phone=$phoneNumber, userStatus=$userStatus => token generated.")
+        logger.info("userStatus = $userStatus")
         return tokenResponse
     }
 
     override fun login(request: LoginRequest): TokenResponse {
-        val locale = LocaleContextHolder.getLocale()
+        if (!validatePhoneNumber(request.phoneNumber)) throw InvalidInputException(request.phoneNumber)
 
-        customValidator.notBlank(object : FieldName {
-            override val name = "phoneNumber"
-        }, request.phone)
-        customValidator.notBlank(object : FieldName {
-            override val name = "password"
-        }, request.password)
-        if (!validatePhoneNumber(request.phone)) throw InvalidPhoneNumber()
-
-
-        val user = userRepository.findByPhoneNumber(request.phone)
-            ?: throw UserNotFoundException(messageSource)
+        val user = userRepository.findByPhoneNumber(request.phoneNumber)
+            ?: throw UserNotFoundException()
 
         if (!passwordEncoder.matches(request.password, user.password)) {
-            val messageKey = "INVALID_INPUT"
-            val errorMsg = messageSource.getMessage(messageKey, null, locale)
-            throw InvalidInputException().also { logger.warn(" $errorMsg") }
+            throw InvalidInputException(request.password)
         }
 
         val tokenResponse = jwtUtils.generateToken(user)
-        logger.info("login => phone=${request.phone} => token generated.")
         return tokenResponse
     }
 }
@@ -158,12 +153,18 @@ class EskizImp : EskizService {
     }
 }
 
-// ...existing code...
+@Service
+class MessageSourceServiceImpl(
+    private val messageSource: MessageSource
+) : MessageSourceService {
+    override fun getMessage(key: MessageKey): String {
+        return messageSource.getMessage(key.name, null, LocaleContextHolder.getLocale())
+    }
+}
 
 @Service
 class OTPServiceImpl(
     private val eskizService: EskizService,
-    private val messageSource: MessageSource,
     private val otpRepository: OtpRepository,
     private val passwordEncoder: PasswordEncoder
 ) : OTPService {
@@ -175,7 +176,7 @@ class OTPServiceImpl(
     override fun generateOTP(phoneNumber: String): Long {
         val attempts = requestCounts.getOrDefault(phoneNumber, 0)
         if (attempts >= MAX_ATTEMPTS) {
-            throw InvalidInputException()
+            throw ValidationException()
         }
         requestCounts[phoneNumber] = attempts + 1
 
@@ -186,7 +187,7 @@ class OTPServiceImpl(
             phoneNumber = phoneNumber,
             otpLogin = passwordEncoder.encode(otpCode),
             sentTime = now,
-            expiredAt = now.plusMinutes(1), // example: OTP valid for 5 minutes
+            expiredAt = now.plusMinutes(1),
             checked = false
         )
         val savedRecord = otpRepository.save(entity)
@@ -208,7 +209,7 @@ class OTPServiceImpl(
             return false
         }
 
-        val isMatch = (record.otpLogin == otpCode)
+        val isMatch = passwordEncoder.matches(otpCode, record.otpLogin)
         if (isMatch) {
             record.checked = true
             otpRepository.save(record)
@@ -219,3 +220,156 @@ class OTPServiceImpl(
     }
 }
 
+@Service
+class UserServiceImpl(
+    private val userRepository: UserRepository,
+    private val passwordEncoder: PasswordEncoder
+) : UserService{
+    override fun createUser(createUserRequest: CreateUserRequest): UserDTO {
+        if(userRepository.findByPhoneNumber(createUserRequest.phoneNumber) != null) {
+            throw DuplicateResourceException()
+        }
+
+        val user = User(
+            username = createUserRequest.username,
+            phoneNumber = createUserRequest.phoneNumber,
+            password = passwordEncoder.encode(createUserRequest.password),
+            role = createUserRequest.role
+        )
+
+        return userRepository.save(user).toDto()
+    }
+
+    override fun getAllUsers(pageable: Pageable): Page<UserDTO> {
+       return userRepository.findAllNotDeleted(pageable).map { it.toDto() }
+    }
+
+    override fun getUserById(id: Long): UserDTO? {
+        val user = userRepository.findById(id).orElseThrow { ResourceNotFoundException(id) }
+        return user.toDto()
+    }
+
+    override fun updateUser(id: Long, updateUserRequest: UpdateUserRequest): UserDTO {
+        val user = userRepository.findById(id)
+            .orElseThrow { ResourceNotFoundException("User not found") }
+
+        updateUserRequest.username.let { user.username = it }
+        updateUserRequest.phoneNumber.let { user.phoneNumber = it }
+
+        val updatedUser = userRepository.save(user)
+        return updatedUser.toDto()
+    }
+
+    override fun deleteUser(id: Long) {
+        val existing = userRepository.findById(id).orElseThrow { ResourceNotFoundException(id) }
+        existing.deleted = true
+        userRepository.save(existing)
+    }
+}
+
+@Service
+class RestaurantServiceImpl(
+    private val restaurantRepository: RestaurantRepository,
+): RestaurantService {
+
+    override fun create(request: CreateRestaurantRequest): BaseMessage {
+        val restaurant = Restaurant(
+            name = request.name,
+            contact = request.contact,
+            location = request.location
+        )
+        restaurantRepository.save(restaurant)
+        return  BaseMessage.OK
+    }
+
+}
+
+@Service
+class MenuServiceImpl(
+    private val menuRepository: MenuRepository,
+    private val menuItemRepository: MenuItemRepository,
+    private val restaurantRepository: RestaurantRepository
+): MenuService {
+
+    override fun createMenu(createMenuRequest: createMenuRequest): MenuDTO {
+        val restaurant = restaurantRepository.findById(createMenuRequest.restaurantId)
+            .orElseThrow { ResourceNotFoundException(createMenuRequest.restaurantId) }
+        val menu = Menu(
+            name = createMenuRequest.name,
+            description = createMenuRequest.description,
+            category = createMenuRequest.category,
+            restaurant = restaurant
+        )
+
+        return menuRepository.save(menu).toDto()
+    }
+
+    override fun addMenuItem(menuId: Long, addMenuItem: addMenuItem): MenuItemDTO {
+        val menu = menuRepository.findById(menuId).orElseThrow { ResourceNotFoundException(menuId) }
+        val menuItem = MenuItem(addMenuItem.name, addMenuItem.price, addMenuItem.description, menu)
+        return menuItemRepository.save(menuItem).toDto()
+    }
+
+    override fun removeMenuItem(menuItemId: Long) {
+        val menuItem = menuItemRepository.findById(menuItemId).orElseThrow { ResourceNotFoundException(menuItemId) }
+        menuItemRepository.delete(menuItem)
+    }
+
+    override fun updateMenuItem(menuItemId: Long,  addMenuItem: addMenuItem): MenuItemDTO {
+        val menuItem = menuItemRepository.findById(menuItemId).orElseThrow { ResourceNotFoundException(menuItemId) }
+
+       menuItem.apply {
+           this.name = addMenuItem.name
+           this.price = addMenuItem.price
+           this.description = addMenuItem.description
+       }
+
+        return menuItemRepository.save(menuItem).toDto()
+    }
+}
+
+@Service
+@Transactional
+class OrderServiceImpl(
+    private val orderRepository: OrderRepository,
+    private val orderItemRepository: OrderItemRepository,
+    private val menuItemRepository: MenuItemRepository,
+    private val restaurantRepository: RestaurantRepository
+) : OrderService {
+
+    override fun createOrder(customerId: Long, restaurantId: Long, createOrderRequest: createOrderRequest): OrderDTO {
+        val restaurant = restaurantRepository.findById(restaurantId).orElseThrow { ResourceNotFoundException(restaurantId) }
+        val order = Order(
+            customerId = customerId,
+            restaurant = restaurant,
+            totalAmount = BigDecimal.ZERO,
+            paymentOption = createOrderRequest.paymentOption,
+            status = OrderStatus.PENDING
+        )
+        val savedOrder = orderRepository.save(order)
+
+        var total = BigDecimal.ZERO
+        createOrderRequest.items.forEach { (menuItemId, qty) ->
+            val menuItem = menuItemRepository.findById(menuItemId)
+                .orElseThrow { ResourceNotFoundException(menuItemId) }
+            val price = menuItem.price.multiply(BigDecimal(qty))
+            total = total.add(price)
+            val orderItem = OrderItem(
+                order = savedOrder,
+                menuItem = menuItem,
+                quantity = qty,
+                price = price
+            )
+            orderItemRepository.save(orderItem)
+        }
+
+        savedOrder.totalAmount = total
+        return orderRepository.save(savedOrder).toDto()
+    }
+
+    override fun updateOrderStatus(orderId: Long, newStatus: OrderStatus): OrderDTO {
+        val order = orderRepository.findById(orderId).orElseThrow { ResourceNotFoundException(orderId) }
+        order.status = newStatus
+        return orderRepository.save(order).toDto()
+    }
+}

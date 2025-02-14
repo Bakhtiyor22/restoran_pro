@@ -7,9 +7,8 @@ import org.springframework.data.annotation.CreatedDate
 import org.springframework.data.annotation.LastModifiedBy
 import org.springframework.data.annotation.LastModifiedDate
 import org.springframework.data.jpa.domain.support.AuditingEntityListener
-import java.time.LocalDate
+import java.math.BigDecimal
 import java.time.LocalDateTime
-import java.time.ZonedDateTime
 import java.util.*
 
 @MappedSuperclass
@@ -26,10 +25,11 @@ open class BaseEntity(
 @Entity
 @Table(name = "users")
 class User(
-    val phoneNumber: String,
+    var username: String,
+    var phoneNumber: String,
     var password: String,
     @Enumerated(EnumType.STRING) var role: Roles,
-    @OneToMany(mappedBy = "user", fetch = FetchType.EAGER) private var addresses: List<Address> = mutableListOf()
+    @OneToMany(mappedBy = "user", fetch = FetchType.EAGER) var addresses: List<Address> = mutableListOf()
 ) : BaseEntity()
 
 @Entity
@@ -37,11 +37,11 @@ class Address(
     val addressLine: String,
     val city: String,
     val state: String,
-    val postalCode:String,
+    val postalCode: String,
     val longitude: Float,
     val latitude: Float,
 
-    @ManyToOne @JoinColumn(name = "user_id") private val user: User? = null
+    @ManyToOne @JoinColumn(name = "user_id") private var user: User? = null
 ) : BaseEntity()
 
 @Entity
@@ -52,4 +52,67 @@ class OtpEntity(
     val sentTime: LocalDateTime,
     val expiredAt: LocalDateTime,
     var checked: Boolean
+) : BaseEntity()
+
+@Entity
+@Table(name = "restaurant")
+class Restaurant(
+    var name: String,
+    var contact: String,
+    var location: String
+) : BaseEntity() {
+    @OneToMany(mappedBy = "restaurant", cascade = [CascadeType.ALL], orphanRemoval = true)
+    var menus: MutableList<Menu> = mutableListOf()
+}
+
+@Entity
+@Table(name = "menu")
+class Menu(
+    var name: String,
+    var description: String?,
+    var category: MenuCategory,
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "restaurant_id")
+    var restaurant: Restaurant
+) : BaseEntity() {
+    @OneToMany(mappedBy = "menu", cascade = [CascadeType.ALL], orphanRemoval = true)
+    var menuItems: MutableList<MenuItem> = mutableListOf()
+}
+
+@Entity
+@Table(name = "menu_item")
+class MenuItem(
+    var name: String,
+    var price: BigDecimal,
+    var description: String?,
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "menu_id")
+    var menu: Menu
+) : BaseEntity()
+
+@Entity
+@Table(name = "orders")
+class Order(
+    @Column(name = "customer_id") var customerId: Long,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "restaurant_id") var restaurant: Restaurant,
+    var totalAmount: BigDecimal,
+    @Enumerated(EnumType.STRING) var paymentOption: PaymentOption,
+    @Enumerated(EnumType.STRING) var status: OrderStatus,
+    var orderDate: LocalDateTime = LocalDateTime.now()
+) : BaseEntity() {
+    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true)
+    var orderItems: MutableList<OrderItem> = mutableListOf()
+}
+
+@Entity
+@Table(name = "order_item")
+class OrderItem(
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "order_id")
+    var order: Order,
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "menu_item_id")
+    var menuItem: MenuItem,
+    var quantity: Int,
+    var price: BigDecimal
 ) : BaseEntity()
