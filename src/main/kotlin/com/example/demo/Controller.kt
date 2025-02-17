@@ -1,6 +1,7 @@
 package com.example.demo
 
 import org.springframework.data.domain.Pageable
+import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.web.bind.annotation.*
 
 @RestController
@@ -8,18 +9,14 @@ import org.springframework.web.bind.annotation.*
 class AuthController(
     private val authService: AuthService
 ) {
-
     @PostMapping("/otp-login")
     fun otpLogin(@RequestBody otpLogin: OtpLogin) = authService.otpLogin(otpLogin)
-
 
     @PostMapping("/request-otp")
     fun requestOtp(@RequestBody request: OtpRequest) = authService.requestOtp(request)
 
-
     @PostMapping("/login")
     fun login(@RequestBody request: LoginRequest) = authService.login(request)
-
 }
 
 @RestController
@@ -27,20 +24,25 @@ class AuthController(
 class UserController(
     private val userService: UserService
 ) {
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
     @PostMapping()
     fun createUser(@RequestBody request: CreateUserRequest) = userService.createUser(request)
 
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
     @GetMapping()
     fun getAllUsers(
       pageable: Pageable
     ) = userService.getAllUsers(pageable)
 
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
     @GetMapping("/{id}")
     fun getUserById(@PathVariable id: Long) = userService.getUserById(id)
 
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
     @PutMapping("/{id}")
     fun updateUser(@PathVariable id: Long, @RequestBody updateUserRequest: UpdateUserRequest) = userService.updateUser(id, updateUserRequest)
 
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
     @DeleteMapping("/{id}")
     fun deleteUserById(@PathVariable id: Long) = userService.deleteUser(id)
 }
@@ -50,19 +52,79 @@ class UserController(
 class RestaurantController(
     private val restaurantService: RestaurantService
 ) {
+    @PreAuthorize("hasRole('DEV')")
     @PostMapping
     fun createRestaurant(@RequestBody request: CreateRestaurantRequest) =
         restaurantService.create(request)
 }
 
 @RestController
-@RequestMapping("/api/v1/menu")
+@RequestMapping("/api/v1/menus")
 class MenuController(
     private val menuService: MenuService
 ) {
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
     @PostMapping
-    fun createMenu(@RequestBody createMenuRequest: createMenuRequest) = menuService.createMenu(createMenuRequest)
+    fun createMenu(@RequestBody createMenuRequest: CreateMenuRequest) = menuService.createMenu(createMenuRequest)
 
-    @PatchMapping("/{menuId}")
-    fun addMenuItem(@PathVariable menuId: Long, @RequestBody addMenuItem: addMenuItem) = menuService.addMenuItem(menuId, addMenuItem)
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
+    @PutMapping("/{menuId}")
+    fun updateMenu(@PathVariable menuId: Long, @RequestBody updateMenuRequest: CreateMenuRequest) = menuService.updateMenu(menuId, updateMenuRequest)
+
+    @GetMapping
+    fun getAllMenus(pageable: Pageable) = menuService.getAllMenus(pageable)
+
+    @PreAuthorize("hasAnyRole('MANAGER','DEV','EMPLOYEE')")
+    @GetMapping("/{menuId}")
+    fun getMenuById(@PathVariable menuId: Long) = menuService.getMenuById(menuId)
+
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
+    @DeleteMapping("/{menuId}")
+    fun deleteMenuById(@PathVariable menuId: Long) = menuService.deleteMenu(menuId)
+
+    @PreAuthorize("hasAnyRole('MANAGER','DEV','EMPLOYEE')")
+    @PatchMapping("/{menuId}/items")
+    fun addMenuItem(@PathVariable menuId: Long, @RequestBody addMenuItem: AddMenuItem) = menuService.addMenuItem(menuId, addMenuItem)
+
+    @PreAuthorize("hasAnyRole('MANAGER','DEV','EMPLOYEE')")
+    @PatchMapping("/{menuId}/items/{menuItemId}/remove")
+    fun removeMenuItem(@PathVariable menuId: Long, @PathVariable menuItemId: Long) = menuService.removeMenuItem(menuId, menuItemId)
+
+    @PreAuthorize("hasAnyRole('MANAGER','DEV','EMPLOYEE')")
+    @PutMapping("/items/{menuItemId}")
+    fun updateMenuItem(@PathVariable menuItemId: Long, @RequestBody addMenuItem: AddMenuItem) = menuService.updateMenuItem(menuItemId, addMenuItem)
+
+    @GetMapping("/{menuId}/items")
+    fun getAllMenuItems(@PathVariable menuId: Long, pageable: Pageable) = menuService.getAllMenuItems(menuId, pageable)
+}
+
+@RestController
+@RequestMapping("/api/v1/orders")
+class OrderController(
+    private val orderService: OrderService
+) {
+    @PostMapping("/{customerId}/{restaurantId}")
+    fun createOrder(@PathVariable customerId: Long, @PathVariable restaurantId: Long, @RequestBody createOrderRequest: CreateOrderRequest
+    ) = orderService.createOrder(customerId, restaurantId, createOrderRequest)
+
+    @PreAuthorize("hasAnyRole('MANAGER','DEV')")
+    @PutMapping("/{orderId}/status")
+    fun updateOrderStatus(@PathVariable orderId: Long, @RequestBody updateOrderStatusRequest: UpdateOrderStatusRequest
+    ) = orderService.updateOrderStatus(orderId, updateOrderStatusRequest)
+
+    @GetMapping("/user/{userId}")
+    fun getUserOrders(@PathVariable userId: Long, pageable: Pageable) = orderService.getUserOrders(userId, pageable)
+}
+
+@RestController
+@RequestMapping("/api/v1/payments")
+class PaymentController (
+    private val paymentService: PaymentService
+) {
+    @PostMapping("/pay/{orderId}")
+    fun processOrderPayment(@PathVariable orderId: Long?, @RequestBody paymentRequest: PaymentRequest) = paymentService.processOrderPayment(orderId, paymentRequest)
+
+    @GetMapping("/history/{userId}")
+    fun getPaymentHistory(@PathVariable userId: Long) = paymentService.getPaymentHistory(userId)
+
 }

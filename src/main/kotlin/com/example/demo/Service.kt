@@ -6,6 +6,7 @@ import org.springframework.context.MessageSource
 import org.springframework.context.i18n.LocaleContextHolder
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
+import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.security.core.userdetails.UserDetailsService
 import org.springframework.security.core.userdetails.UsernameNotFoundException
@@ -48,15 +49,27 @@ interface RestaurantService {
 }
 
 interface MenuService {
-    fun createMenu(createMenuRequest: createMenuRequest): MenuDTO
-    fun addMenuItem(menuId: Long,  addMenuItem: addMenuItem): MenuItemDTO
-    fun removeMenuItem(menuItemId: Long)
-    fun updateMenuItem(menuItemId: Long, addMenuItem: addMenuItem): MenuItemDTO
+    fun createMenu(createMenuRequest: CreateMenuRequest): MenuDTO
+    fun updateMenu(menuId: Long, updateMenuRequest: CreateMenuRequest): MenuDTO
+    fun getAllMenus(pageable: Pageable): Page<MenuDTO>
+    fun getMenuById(menuId: Long): MenuDTO
+    fun deleteMenu(menuId: Long)
+    fun addMenuItem(menuId: Long,  addMenuItem: AddMenuItem): MenuItemDTO
+    fun removeMenuItem(menuId: Long, menuItemId: Long)
+    fun updateMenuItem(menuItemId: Long, addMenuItem: AddMenuItem): MenuItemDTO
+    fun getAllMenuItems(menuId: Long, pageable: Pageable): Page<MenuItemDTO>
 }
 
 interface OrderService{
-    fun createOrder(customerId: Long, restaurantId: Long, createOrderRequest: createOrderRequest): OrderDTO
-    fun updateOrderStatus(orderId: Long, newStatus: OrderStatus): OrderDTO
+    fun createOrder(customerId: Long, restaurantId: Long, createOrderRequest: CreateOrderRequest): OrderDTO
+    fun updateOrderStatus(orderId: Long, updateOrderStatusRequest: UpdateOrderStatusRequest): OrderDTO
+    fun cancelOrder(orderId: Long): OrderDTO
+    fun getUserOrders(userId: Long, pageable: Pageable): Page<OrderDTO>
+}
+
+interface PaymentService {
+    fun processOrderPayment(orderId: Long?, paymentRequest: PaymentRequest): BaseMessage
+    fun getPaymentHistory(userId: Long): List<PaymentTransactionDTO>
 }
 
 @Service
@@ -73,7 +86,7 @@ class AuthServiceImpl(
 
     override fun requestOtp(otpRequest: OtpRequest): OtpIdResponse {
         val phoneNumber = otpRequest.phoneNumber
-        if (!validatePhoneNumber(phoneNumber)) throw RuntimeException(otpRequest.phoneNumber)
+        if (!validatePhoneNumber(phoneNumber)) throw InvalidInputException(phoneNumber)
 
         val foundUser = userRepository.findByPhoneNumber(phoneNumber)
         val userStatus = when {
@@ -132,13 +145,17 @@ class AuthServiceImpl(
 class CustomUserDetailsService(
     private val userRepository: UserRepository
 ) : UserDetailsService {
+
     override fun loadUserByUsername(phoneNumber: String): UserDetails {
         val user = userRepository.findByPhoneNumber(phoneNumber)
-            ?: throw UsernameNotFoundException("User not found")
+            ?: throw UsernameNotFoundException("User not found with phone: $phoneNumber")
+
+        val authorities = listOf(SimpleGrantedAuthority("ROLE_${user.role.name}"))
+
         return org.springframework.security.core.userdetails.User(
             user.phoneNumber,
             user.password,
-            emptyList()
+            authorities
         )
     }
 }
@@ -176,7 +193,7 @@ class OTPServiceImpl(
     override fun generateOTP(phoneNumber: String): Long {
         val attempts = requestCounts.getOrDefault(phoneNumber, 0)
         if (attempts >= MAX_ATTEMPTS) {
-            throw ValidationException()
+            throw ValidationException({phoneNumber})
         }
         requestCounts[phoneNumber] = attempts + 1
 
@@ -226,8 +243,12 @@ class UserServiceImpl(
     private val passwordEncoder: PasswordEncoder
 ) : UserService{
     override fun createUser(createUserRequest: CreateUserRequest): UserDTO {
-        if(userRepository.findByPhoneNumber(createUserRequest.phoneNumber) != null) {
-            throw DuplicateResourceException()
+        if (createUserRequest.phoneNumber.isBlank()) {
+            throw InvalidInputException(createUserRequest.phoneNumber)
+        }
+
+        if (userRepository.findByPhoneNumber(createUserRequest.phoneNumber) != null) {
+            throw DuplicateResourceException(createUserRequest.phoneNumber)
         }
 
         val user = User(
@@ -236,7 +257,6 @@ class UserServiceImpl(
             password = passwordEncoder.encode(createUserRequest.password),
             role = createUserRequest.role
         )
-
         return userRepository.save(user).toDto()
     }
 
@@ -251,13 +271,23 @@ class UserServiceImpl(
 
     override fun updateUser(id: Long, updateUserRequest: UpdateUserRequest): UserDTO {
         val user = userRepository.findById(id)
-            .orElseThrow { ResourceNotFoundException("User not found") }
+            .orElseThrow { ResourceNotFoundException("User with id=$id not found for update") }
 
-        updateUserRequest.username.let { user.username = it }
-        updateUserRequest.phoneNumber.let { user.phoneNumber = it }
+        if (updateUserRequest.phoneNumber != user.phoneNumber) {
+            val existing = userRepository.findByPhoneNumber(updateUserRequest.phoneNumber)
+            if (existing != null && existing.id != user.id) {
+                throw DuplicateResourceException("Phone number already in use: ${updateUserRequest.phoneNumber}")
+            }
+        }
 
-        val updatedUser = userRepository.save(user)
-        return updatedUser.toDto()
+        user.username = updateUserRequest.username.ifBlank { user.username }
+        user.phoneNumber = updateUserRequest.phoneNumber.ifBlank { user.phoneNumber }
+
+        if (updateUserRequest.password.isNotBlank()) {
+            user.password = passwordEncoder.encode(updateUserRequest.password)
+        }
+
+        return userRepository.save(user).toDto()
     }
 
     override fun deleteUser(id: Long) {
@@ -273,6 +303,10 @@ class RestaurantServiceImpl(
 ): RestaurantService {
 
     override fun create(request: CreateRestaurantRequest): BaseMessage {
+        if (request.name.isEmpty()) {
+            throw InvalidInputException()
+        }
+
         val restaurant = Restaurant(
             name = request.name,
             contact = request.contact,
@@ -291,7 +325,12 @@ class MenuServiceImpl(
     private val restaurantRepository: RestaurantRepository
 ): MenuService {
 
-    override fun createMenu(createMenuRequest: createMenuRequest): MenuDTO {
+    override fun createMenu(createMenuRequest: CreateMenuRequest): MenuDTO {
+        val existingMenu = menuRepository.findByCategory(createMenuRequest.category)
+        if (existingMenu != null) {
+            throw ValidationException()
+        }
+
         val restaurant = restaurantRepository.findById(createMenuRequest.restaurantId)
             .orElseThrow { ResourceNotFoundException(createMenuRequest.restaurantId) }
         val menu = Menu(
@@ -304,18 +343,59 @@ class MenuServiceImpl(
         return menuRepository.save(menu).toDto()
     }
 
-    override fun addMenuItem(menuId: Long, addMenuItem: addMenuItem): MenuItemDTO {
+    override fun updateMenu(menuId: Long, updateMenuRequest: CreateMenuRequest): MenuDTO {
         val menu = menuRepository.findById(menuId).orElseThrow { ResourceNotFoundException(menuId) }
+
+        if (updateMenuRequest.category != menu.category) {
+            val existingMenu = menuRepository.findByCategory(updateMenuRequest.category)
+            if (existingMenu != null) {
+                throw ValidationException(updateMenuRequest.category)
+            }
+        }
+
+        menu.apply {
+            name = updateMenuRequest.name
+            description = updateMenuRequest.description
+            category = updateMenuRequest.category
+        }
+        return menuRepository.save(menu).toDto()
+    }
+
+    override fun getAllMenus(pageable: Pageable): Page<MenuDTO> {
+        return menuRepository.findAll(pageable).map { it.toDto() }
+    }
+
+    override fun getMenuById(menuId: Long): MenuDTO {
+        return menuRepository.findByIdAndDeletedFalse(menuId)!!.toDto()
+    }
+
+    override fun deleteMenu(menuId: Long) {
+        val menu = menuRepository.findById(menuId).orElseThrow { ResourceNotFoundException(menuId) }
+        menuRepository.delete(menu)
+    }
+
+    override fun addMenuItem(menuId: Long, addMenuItem: AddMenuItem): MenuItemDTO {
+        val menu = menuRepository.findById(menuId).orElseThrow { ResourceNotFoundException(menuId) }
+        if (addMenuItem.price < BigDecimal.ZERO) {
+            throw InvalidInputException("Price cannot be negative")
+        }
+
+        val existingMenuItem = menuItemRepository.findByNameAndMenuId(addMenuItem.name, menuId)
+        if (existingMenuItem != null) {
+            throw DuplicateResourceException("Menu item with name '${addMenuItem.name}' already exists in menu with id $menuId")
+        }
+
         val menuItem = MenuItem(addMenuItem.name, addMenuItem.price, addMenuItem.description, menu)
         return menuItemRepository.save(menuItem).toDto()
     }
 
-    override fun removeMenuItem(menuItemId: Long) {
-        val menuItem = menuItemRepository.findById(menuItemId).orElseThrow { ResourceNotFoundException(menuItemId) }
+    override fun removeMenuItem(menuId: Long, menuItemId: Long) {
+        val menuItem = menuItemRepository.findByIdAndMenuId(menuItemId, menuId)
+            ?: throw ResourceNotFoundException(menuItemId)
         menuItemRepository.delete(menuItem)
     }
 
-    override fun updateMenuItem(menuItemId: Long,  addMenuItem: addMenuItem): MenuItemDTO {
+    override fun updateMenuItem(menuItemId: Long,  addMenuItem: AddMenuItem): MenuItemDTO {
         val menuItem = menuItemRepository.findById(menuItemId).orElseThrow { ResourceNotFoundException(menuItemId) }
 
        menuItem.apply {
@@ -326,50 +406,157 @@ class MenuServiceImpl(
 
         return menuItemRepository.save(menuItem).toDto()
     }
+
+    override fun getAllMenuItems(menuId: Long, pageable: Pageable): Page<MenuItemDTO> {
+        val menu = menuRepository.findById(menuId).orElseThrow { ResourceNotFoundException(menuId) }
+        return menuItemRepository.findAllByMenuId(menu.id!!, pageable).map { it.toDto() }
+    }
 }
 
 @Service
 @Transactional
 class OrderServiceImpl(
     private val orderRepository: OrderRepository,
-    private val orderItemRepository: OrderItemRepository,
     private val menuItemRepository: MenuItemRepository,
-    private val restaurantRepository: RestaurantRepository
+    private val restaurantRepository: RestaurantRepository,
+    private val paymentService: PaymentService
 ) : OrderService {
 
-    override fun createOrder(customerId: Long, restaurantId: Long, createOrderRequest: createOrderRequest): OrderDTO {
-        val restaurant = restaurantRepository.findById(restaurantId).orElseThrow { ResourceNotFoundException(restaurantId) }
+    override fun createOrder(
+        customerId: Long,
+        restaurantId: Long,
+        createOrderRequest: CreateOrderRequest
+    ): OrderDTO {
+        val restaurant = restaurantRepository.findById(restaurantId)
+            .orElseThrow { ResourceNotFoundException(restaurantId) }
+
+        var totalAmount = BigDecimal.ZERO
+        val orderItems = createOrderRequest.items.map { orderItemRequest ->
+            val menuItem = menuItemRepository.findById(orderItemRequest.menuItemId)
+                .orElseThrow { ResourceNotFoundException(orderItemRequest.menuItemId) }
+            val itemPrice = menuItem.price.multiply(BigDecimal(orderItemRequest.quantity))
+            totalAmount = totalAmount.add(itemPrice)
+
+            OrderItemTemp(menuItem, orderItemRequest.quantity, itemPrice)
+        }
+
+        val paymentResponse = paymentService.processOrderPayment(
+            orderId = null,
+            PaymentRequest(
+                userId = customerId,
+                amount = totalAmount,
+                paymentOption = createOrderRequest.paymentOption
+            )
+        )
+
+        if (paymentResponse.code != 200) {
+            throw RuntimeException(paymentResponse.message ?: "Payment Failed")
+        }
+
         val order = Order(
             customerId = customerId,
             restaurant = restaurant,
-            totalAmount = BigDecimal.ZERO,
+            totalAmount = totalAmount,
             paymentOption = createOrderRequest.paymentOption,
-            status = OrderStatus.PENDING
+            status = OrderStatus.PAID,
+            orderDate = LocalDateTime.now()
         )
+
         val savedOrder = orderRepository.save(order)
 
-        var total = BigDecimal.ZERO
-        createOrderRequest.items.forEach { (menuItemId, qty) ->
-            val menuItem = menuItemRepository.findById(menuItemId)
-                .orElseThrow { ResourceNotFoundException(menuItemId) }
-            val price = menuItem.price.multiply(BigDecimal(qty))
-            total = total.add(price)
+        orderItems.forEach { tempItem ->
             val orderItem = OrderItem(
                 order = savedOrder,
-                menuItem = menuItem,
-                quantity = qty,
-                price = price
+                menuItem = tempItem.menuItem,
+                quantity = tempItem.quantity,
+                price = tempItem.price
             )
-            orderItemRepository.save(orderItem)
+            savedOrder.orderItems.add(orderItem)
         }
 
-        savedOrder.totalAmount = total
         return orderRepository.save(savedOrder).toDto()
     }
 
-    override fun updateOrderStatus(orderId: Long, newStatus: OrderStatus): OrderDTO {
-        val order = orderRepository.findById(orderId).orElseThrow { ResourceNotFoundException(orderId) }
-        order.status = newStatus
+    override fun getUserOrders(userId: Long, pageable: Pageable): Page<OrderDTO> {
+        return orderRepository.findAllByCustomerId(userId, pageable).map { it.toDto() }
+    }
+
+    override fun updateOrderStatus(orderId: Long, updateOrderStatusRequest: UpdateOrderStatusRequest): OrderDTO {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResourceNotFoundException(orderId) }
+
+        if (order.status == OrderStatus.CANCELLED) {
+            throw InvalidInputException("Cannot update cancelled order")
+        }
+
+        order.status = updateOrderStatusRequest.newStatus
         return orderRepository.save(order).toDto()
+    }
+
+    override fun cancelOrder(orderId: Long): OrderDTO {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResourceNotFoundException(orderId) }
+
+        if (order.status == OrderStatus.CANCELLED) {
+            throw InvalidInputException("Order is already cancelled")
+        }
+
+        order.status = OrderStatus.CANCELLED
+        return orderRepository.save(order).toDto()
+    }
+
+    private data class OrderItemTemp(
+        val menuItem: MenuItem,
+        val quantity: Int,
+        val price: BigDecimal
+    )
+}
+
+@Service
+class PaymentServiceImpl(
+    private val paymentRepository: PaymentRepository,
+    private val orderRepository: OrderRepository
+) : PaymentService {
+
+    private val logger = LoggerFactory.getLogger(javaClass)
+
+    override fun processOrderPayment(orderId: Long?, paymentRequest: PaymentRequest): BaseMessage {
+        val order = orderId?.let {
+            orderRepository.findById(it).orElseThrow { ResourceNotFoundException(it) }
+        }
+
+        var transaction = PaymentTransaction(
+            userId = paymentRequest.userId,
+            amount = paymentRequest.amount,
+            paymentOption = paymentRequest.paymentOption,
+            paymentStatus = PaymentStatus.PENDING,
+            orderId = orderId
+        )
+        transaction = paymentRepository.save(transaction)
+
+        val result = doPayment(paymentRequest)
+        transaction.paymentStatus = if (result) PaymentStatus.SUCCESS else PaymentStatus.FAILED
+        paymentRepository.save(transaction)
+
+        order?.let {
+            if (it.totalAmount != paymentRequest.amount) {
+                throw InvalidInputException("Payment amount does not match order total")
+            }
+
+            it.status = if (result) OrderStatus.IN_PROGRESS else OrderStatus.CANCELLED
+            orderRepository.save(it)
+        }
+
+        return if (result) {
+            BaseMessage(200, "Payment Succeeded. Transaction ID: ${transaction.transactionId}")
+        } else {
+            BaseMessage(-1, "Payment Failed. Transaction ID: ${transaction.transactionId}")
+        }
+    }
+
+    override fun getPaymentHistory(userId: Long): List<PaymentTransactionDTO> = paymentRepository.findAllByUserIdOrderByTransactionTimeDesc(userId).map { it.toDto() }
+
+    private fun doPayment(paymentRequest: PaymentRequest): Boolean {
+        return paymentRequest.amount <= BigDecimal("10000000.00")
     }
 }

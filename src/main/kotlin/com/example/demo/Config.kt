@@ -8,9 +8,12 @@ import org.springframework.context.MessageSource
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.support.ResourceBundleMessageSource
+import org.springframework.data.domain.AuditorAware
+import org.springframework.data.jpa.repository.config.EnableJpaAuditing
 import org.springframework.security.authentication.AuthenticationManager
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider
 import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
 import org.springframework.security.core.context.SecurityContextHolder
@@ -40,7 +43,7 @@ class AppInit(
 
         if (userRepository.findByRole(managerRole) == null) {
             val manager = User(
-                username =  "Manager",
+                username =  "MANAGER",
                 phoneNumber = "+998900000001",
                 password = passwordEncoder.encode("manager123"),
                 role = managerRole
@@ -61,7 +64,23 @@ class AppInit(
 }
 
 @Configuration
+@EnableJpaAuditing
+class AuditingConfig {
+    @Bean
+    fun auditorProvider(): AuditorAware<String> {
+        return AuditorAwareImpl()
+    }
+}
+
+class AuditorAwareImpl : AuditorAware<String> {
+    override fun getCurrentAuditor(): Optional<String> {
+        return Optional.of("system")
+    }
+}
+
+@Configuration
 @EnableWebSecurity
+@EnableMethodSecurity(prePostEnabled = true)
 class SecurityConfig(
     private val customUserDetailsService: CustomUserDetailsService,
     private val jwtAuthFilter: JwtAuthFilter

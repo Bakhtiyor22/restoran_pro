@@ -1,8 +1,7 @@
 spring:
-
   datasource:
     driver-class-name: org.postgresql.Driver
-    url: jdbc:postgresql://localhost:5432/restaurant #for local/
+    url: jdbc:postgresql://localhost:5432/restaurant
     username: postgres
     password: 2210
   jpa:
@@ -15,8 +14,9 @@ spring:
           lob:
             non_contextual_creation: true
             show_sql: true
-    #        format_sql: true
     hibernate:
       ddl-auto: update
       naming:
         implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyComponentPathImpl
+  main:
+    allow-bean-definition-overriding: true

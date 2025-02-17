@@ -65,7 +65,8 @@ data class UpdateUserRequest(
     val username: String,
 
     @Pattern(regexp = "^\\+998\\d{9}$", message = "Invalid phone number format")
-    val phoneNumber: String
+    val phoneNumber: String,
+    @NotBlank val password: String
 )
 
 data class UserDTO(
@@ -88,6 +89,9 @@ data class AddressDTO(
     val latitude: Double
 )
 
+data class UpdateOrderStatusRequest(
+    val newStatus: OrderStatus
+)
 
 fun User.toDto() = UserDTO(
     id = this.id!!,
@@ -106,14 +110,14 @@ fun Address.toDto() = AddressDTO(
     latitude = this.latitude.toDouble()
 )
 
-data class createMenuRequest(
+data class CreateMenuRequest(
     val name: String,
     val description: String?,
     val category: MenuCategory,
     val restaurantId: Long
 )
 
-data class addMenuItem(
+data class AddMenuItem(
     val name: String,
     val price: BigDecimal,
     val description: String?
@@ -151,8 +155,13 @@ fun Menu.toDto() = MenuDTO(
     menuItems = this.menuItems.map { it.toDto() }
 )
 
-data class createOrderRequest(
-    val items: List<Pair<Long, Int>>,
+data class OrderItemRequest(
+    val menuItemId: Long,
+    val quantity: Int
+)
+
+data class CreateOrderRequest(
+    val items: List<OrderItemRequest>,
     val paymentOption: PaymentOption
 )
 
@@ -192,4 +201,30 @@ fun OrderItem.toDto() = OrderItemDTO(
     menuItemId = this.menuItem.id,
     quantity = this.quantity,
     price = this.price
+)
+
+data class PaymentRequest(
+    val userId: Long,
+    val amount: BigDecimal,
+    val paymentOption: PaymentOption
+)
+
+data class PaymentTransactionDTO(
+    val id: Long,
+    val transactionId: String,
+    val userId: Long,
+    val amount: BigDecimal,
+    val paymentOption: PaymentOption,
+    val paymentStatus: PaymentStatus,
+    val transactionTime: LocalDateTime
+)
+
+fun PaymentTransaction.toDto(): PaymentTransactionDTO = PaymentTransactionDTO(
+    id = this.id!!,
+    transactionId = this.transactionId,
+    userId = this.userId,
+    amount = this.amount,
+    paymentOption = this.paymentOption,
+    paymentStatus = this.paymentStatus,
+    transactionTime = this.transactionTime
 )

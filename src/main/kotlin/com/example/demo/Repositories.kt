@@ -67,18 +67,24 @@ interface RestaurantRepository : BaseRepository<Restaurant>
 
 @Repository
 interface MenuRepository : BaseRepository<Menu> {
-    fun findAllByRestaurantId(restaurantId: Long): List<Menu>
+    fun findByCategory(category: MenuCategory): Menu?
 }
 
 @Repository
 interface MenuItemRepository : BaseRepository<MenuItem> {
-    fun findAllByMenuId(menuId: Long): List<MenuItem>
+    fun findAllByMenuId(menuId: Long, pageable: Pageable): Page<MenuItem>
+    fun findByIdAndMenuId(menuItemId: Long, menuId: Long): MenuItem?
+    fun findByNameAndMenuId(name: String, menuId: Long): MenuItem?
 }
 
 @Repository
 interface OrderRepository : BaseRepository<Order> {
-    fun findAllByRestaurantId(restaurantId: Long): List<Order>
+    fun findAllByCustomerId(customerId: Long, pageable: Pageable): Page<Order>
 }
 
 @Repository
 interface OrderItemRepository : BaseRepository<OrderItem>
+
+interface PaymentRepository : BaseRepository<PaymentTransaction> {
+    fun findAllByUserIdOrderByTransactionTimeDesc(userId: Long): List<PaymentTransaction>
+}

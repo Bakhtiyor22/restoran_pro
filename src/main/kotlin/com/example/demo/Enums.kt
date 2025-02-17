@@ -13,8 +13,14 @@ enum class PaymentOption {
     CASH, CARD, ONLINE
 }
 
+enum class PaymentStatus {
+    PENDING,
+    SUCCESS,
+    FAILED
+}
+
 enum class OrderStatus {
-    PENDING, IN_PROGRESS, COMPLETED, CANCELLED
+    PENDING, IN_PROGRESS, PAID, CANCELLED
 }
 
 enum class ErrorCode(val code: Int) {

@@ -19,7 +19,7 @@ open class BaseEntity(
     @LastModifiedDate @Temporal(TemporalType.TIMESTAMP) var modifiedDate: Date? = null,
     @CreatedBy var createdBy: String? = null,
     @LastModifiedBy var modifiedBy: String? = null,
-    @Column(nullable = false) @ColumnDefault(value = "false") var deleted: Boolean = false,
+    @Column(nullable = false) @ColumnDefault(value = "false") var deleted: Boolean = false,//I should implement the soft deletion
 )
 
 @Entity
@@ -100,7 +100,7 @@ class Order(
     @Enumerated(EnumType.STRING) var status: OrderStatus,
     var orderDate: LocalDateTime = LocalDateTime.now()
 ) : BaseEntity() {
-    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true)
+    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
     var orderItems: MutableList<OrderItem> = mutableListOf()
 }
 
@@ -116,3 +116,25 @@ class OrderItem(
     var quantity: Int,
     var price: BigDecimal
 ) : BaseEntity()
+
+@Entity
+@Table(name = "payment_transactions")
+class PaymentTransaction(
+    val userId: Long,
+    val amount: BigDecimal,
+    val orderId: Long?,
+
+    @Enumerated(EnumType.STRING)
+    val paymentOption: PaymentOption,
+
+    @Enumerated(EnumType.STRING)
+    var paymentStatus: PaymentStatus,
+
+    val transactionTime: LocalDateTime = LocalDateTime.now(),
+
+    val transactionId: String = generateTransactionId()
+): BaseEntity() {
+    companion object {
+        fun generateTransactionId(): String = "TX" + System.currentTimeMillis()
+    }
+}
