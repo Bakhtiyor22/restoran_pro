@@ -85,6 +85,19 @@ interface OrderRepository : BaseRepository<Order> {
 @Repository
 interface OrderItemRepository : BaseRepository<OrderItem>
 
+@Repository
 interface PaymentRepository : BaseRepository<PaymentTransaction> {
     fun findAllByUserIdOrderByTransactionTimeDesc(userId: Long): List<PaymentTransaction>
+}
+
+@Repository
+interface CardRepository : BaseRepository<Card> {
+    fun findByUserIdAndDeletedFalse(userId: Long): List<Card>
+    fun findByUserIdAndIsDefaultTrueAndDeletedFalse(userId: Long): Card?
+    fun findByIdAndUserIdAndDeletedFalse(cardId: Long, userId: Long): Card?
+}
+
+@Repository
+interface CartRepository : BaseRepository<Cart> {
+    fun findByCustomerId(userId: Long): Cart?
 }

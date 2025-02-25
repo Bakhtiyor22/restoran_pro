@@ -19,7 +19,7 @@ open class BaseEntity(
     @LastModifiedDate @Temporal(TemporalType.TIMESTAMP) var modifiedDate: Date? = null,
     @CreatedBy var createdBy: String? = null,
     @LastModifiedBy var modifiedBy: String? = null,
-    @Column(nullable = false) @ColumnDefault(value = "false") var deleted: Boolean = false,//I should implement the soft deletion
+    @Column(nullable = false) @ColumnDefault(value = "false") var deleted: Boolean = false,
 )
 
 @Entity
@@ -29,7 +29,8 @@ class User(
     var phoneNumber: String,
     var password: String,
     @Enumerated(EnumType.STRING) var role: Roles,
-    @OneToMany(mappedBy = "user", fetch = FetchType.EAGER) var addresses: List<Address> = mutableListOf()
+    @OneToMany(mappedBy = "user", fetch = FetchType.EAGER) var cards: MutableList<Card> = mutableListOf(),
+    @OneToMany(mappedBy = "user", fetch = FetchType.EAGER) var addresses: MutableList<Address> = mutableListOf()
 ) : BaseEntity()
 
 @Entity
@@ -93,16 +94,22 @@ class MenuItem(
 @Entity
 @Table(name = "orders")
 class Order(
-    @Column(name = "customer_id") var customerId: Long,
-    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "restaurant_id") var restaurant: Restaurant,
+    var customerId: Long,
+    @ManyToOne
+    var restaurant: Restaurant,
     var totalAmount: BigDecimal,
-    @Enumerated(EnumType.STRING) var paymentOption: PaymentOption,
-    @Enumerated(EnumType.STRING) var status: OrderStatus,
-    var orderDate: LocalDateTime = LocalDateTime.now()
-) : BaseEntity() {
-    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
+    var subtotal: BigDecimal,
+    var serviceCharge: BigDecimal,
+    var deliveryFee: BigDecimal,
+    var discount: BigDecimal,
+    @Enumerated(EnumType.STRING)
+    var paymentOption: PaymentOption,
+    @Enumerated(EnumType.STRING)
+    var status: OrderStatus,
+    var orderDate: LocalDateTime,
+    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true)
     var orderItems: MutableList<OrderItem> = mutableListOf()
-}
+) : BaseEntity()
 
 @Entity
 @Table(name = "order_item")
@@ -138,3 +145,49 @@ class PaymentTransaction(
         fun generateTransactionId(): String = "TX" + System.currentTimeMillis()
     }
 }
+
+@Entity
+@Table(name = "cards")
+class Card(
+    var cardNumber: String,
+    var expiryDate: String,
+    var cardHolderName: String,
+    var isDefault: Boolean = false,
+    var cardStatus: Boolean = true,
+
+    @Enumerated(EnumType.STRING)
+    var cardType: CardType,
+
+    var balance: BigDecimal = BigDecimal.ZERO,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    var user: User
+): BaseEntity()
+
+@Entity
+@Table(name = "cart")
+class Cart(
+    var customerId: Long,
+    @ManyToOne
+    var restaurant: Restaurant,
+    @OneToMany(mappedBy = "cart", cascade = [CascadeType.ALL], orphanRemoval = true)
+    var items: MutableList<CartItem> = mutableListOf(),
+    var serviceChargePercent: BigDecimal = BigDecimal("5.0"),
+    var deliveryFee: BigDecimal = BigDecimal("10000"),
+    var discountPercent: BigDecimal = BigDecimal.ZERO,
+) : BaseEntity()
+
+@Entity
+@Table(name = "cart_items")
+class CartItem(
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cart_id")
+    val cart: Cart,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "menu_item_id")
+    val menuItem: MenuItem,
+
+    var quantity: Int
+) : BaseEntity()

@@ -60,12 +60,23 @@ class JwtUtils {
     }
 }
 
-class DateTimeUtil {
-    fun getCurrentTimeZone(): ZonedDateTime {
-        return ZonedDateTime.now(ZoneId.of(System.getenv("TIMEZONE")))
+@Component
+class CardValidator {
+    fun validateCard(number: String, cardType: CardType): Boolean {
+        return number.length == 16 &&
+                cardType.pattern.matches(number) &&
+                validateLuhn(number)
     }
 
-    fun toLocalDateTime(zonedDateTime: ZonedDateTime?): LocalDateTime? {
-        return zonedDateTime?.withZoneSameInstant(ZoneId.of(System.getenv("TIMEZONE")))?.toLocalDateTime()
+    private fun validateLuhn(number: String): Boolean {
+        val digits = number.map { it.toString().toInt() }
+        val sum = digits.reversed()
+            .mapIndexed { index, digit ->
+                if (index % 2 == 1) {
+                    val doubled = digit * 2
+                    if (doubled > 9) doubled - 9 else doubled
+                } else digit
+            }.sum()
+        return sum % 10 == 0
     }
 }

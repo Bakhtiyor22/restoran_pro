@@ -103,9 +103,9 @@ class MenuController(
 class OrderController(
     private val orderService: OrderService
 ) {
-    @PostMapping("/{customerId}/{restaurantId}")
-    fun createOrder(@PathVariable customerId: Long, @PathVariable restaurantId: Long, @RequestBody createOrderRequest: CreateOrderRequest
-    ) = orderService.createOrder(customerId, restaurantId, createOrderRequest)
+    @PostMapping("/{userId}/{restaurantId}")
+    fun createOrder(@PathVariable userId: Long, @PathVariable restaurantId: Long, @RequestBody createOrderRequest: CreateOrderRequest
+    ) = orderService.createOrder(userId, restaurantId, createOrderRequest)
 
     @PreAuthorize("hasAnyRole('MANAGER','DEV')")
     @PutMapping("/{orderId}/status")
@@ -121,10 +121,46 @@ class OrderController(
 class PaymentController (
     private val paymentService: PaymentService
 ) {
-    @PostMapping("/pay/{orderId}")
-    fun processOrderPayment(@PathVariable orderId: Long?, @RequestBody paymentRequest: PaymentRequest) = paymentService.processOrderPayment(orderId, paymentRequest)
+    @PostMapping("/pay/{userId}/{orderId}")
+    fun processOrderPayment(@PathVariable userId: Long,  @PathVariable orderId: Long?, @RequestBody paymentRequest: PaymentRequest) = paymentService.processOrderPayment(userId, orderId, paymentRequest)
 
     @GetMapping("/history/{userId}")
     fun getPaymentHistory(@PathVariable userId: Long) = paymentService.getPaymentHistory(userId)
 
+}
+
+@RestController
+@RequestMapping("/api/v1/cards")
+class CardController(
+    private val cardService: CardService
+) {
+    @PostMapping("/{userId}")
+    fun addCard(@PathVariable userId: Long, @RequestBody request: AddCardRequest) = cardService.addCard(userId, request)
+
+    @GetMapping("/{userId}")
+    fun getUserCards(@PathVariable userId: Long) = cardService.getUserCards(userId)
+
+    @PutMapping("/{userId}/{cardId}/default")
+    fun setDefaultCard(@PathVariable userId: Long, @PathVariable cardId: Long) = cardService.setDefaultCard(userId, cardId)
+
+    @PutMapping("/{userId}/cards/{cardId}/balance")
+    fun updateCardBalance(@PathVariable userId: Long, @PathVariable cardId: Long, @RequestBody request: UpdateCardBalanceRequest) = cardService.updateCardBalance(userId, cardId, request.amount)
+
+    @DeleteMapping("/{userId}/{cardId}")
+    fun deleteCard(@PathVariable userId: Long, @PathVariable cardId: Long) = cardService.deleteCard(userId, cardId)
+}
+
+@RestController
+@RequestMapping("/api/v1/cart")
+class CartController(
+    private val cartService: CartService
+) {
+    @PostMapping("/{userId}/{restaurantId}/items")
+    fun addToCart(@PathVariable userId: Long, @PathVariable restaurantId: Long, @RequestBody request: AddToCartRequest) = cartService.addToCart(userId, restaurantId, request)
+
+    @GetMapping("/{userId}")
+    fun getCart(@PathVariable userId: Long) = cartService.getCart(userId)
+
+    @PostMapping("/{userId}/checkout")
+    fun checkout(@PathVariable userId: Long, @RequestBody paymentRequest: PaymentRequest) = cartService.checkout(userId, paymentRequest)
 }

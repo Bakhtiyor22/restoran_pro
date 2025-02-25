@@ -54,3 +54,15 @@ enum class MenuCategory {
     DRINKS,
     SALADS
 }
+
+data class CardTypePattern(
+    val pattern: Regex,
+    val length: Int
+)
+
+enum class CardType(val pattern: Regex) {
+    HUMO(Regex("^9860[0-9]{12}$")),
+    UZCARD(Regex("^8600[0-9]{12}$")),
+    VISA(Regex("^4[0-9]{12}(?:[0-9]{3})?$")),
+    MASTERCARD(Regex("^5[1-5][0-9]{14}$"));
+}

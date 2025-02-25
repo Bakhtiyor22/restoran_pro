@@ -1,5 +1,6 @@
 package com.example.demo
 
+import jakarta.validation.constraints.DecimalMin
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
@@ -54,17 +55,17 @@ data class CreateRestaurantRequest(
 
 data class CreateUserRequest(
     val username: String,
-    @Pattern(regexp = "^\\+998\\d{9}$", message = "Invalid phone number format")
+    @Pattern(regexp = "^\\+998\\d{9}$", message = "Notug'ri raqam")
     val phoneNumber: String,
     @NotBlank val password: String,
     @NotBlank val role: Roles,
 )
 
 data class UpdateUserRequest(
-    @Size(min = 3, max = 50, message = "Username must be 3-50 characters")
+    @Size(min = 3, max = 50)
     val username: String,
 
-    @Pattern(regexp = "^\\+998\\d{9}$", message = "Invalid phone number format")
+    @Pattern(regexp = "^\\+998\\d{9}$", message = "Notug'ri raqam")
     val phoneNumber: String,
     @NotBlank val password: String
 )
@@ -85,8 +86,17 @@ data class AddressDTO(
     val city: String,
     val state: String,
     val postalCode: String,
-    val longitude: Double,
-    val latitude: Double
+    val longitude: Float,
+    val latitude: Float
+)
+
+data class AddressRequest(
+    val addressLine: String,
+    val city: String,
+    val state: String,
+    val postalCode: String,
+    val longitude: Float,
+    val latitude: Float
 )
 
 data class UpdateOrderStatusRequest(
@@ -106,8 +116,8 @@ fun Address.toDto() = AddressDTO(
     city = this.city,
     state = this.state,
     postalCode = this.postalCode,
-    longitude = this.longitude.toDouble(),
-    latitude = this.latitude.toDouble()
+    longitude = this.longitude,
+    latitude = this.latitude
 )
 
 data class CreateMenuRequest(
@@ -161,7 +171,8 @@ data class OrderItemRequest(
 )
 
 data class CreateOrderRequest(
-    val items: List<OrderItemRequest>,
+    val cartId: Long? = null,  // Optional - if null, direct order
+    val items: List<OrderItemRequest> = emptyList(),  // Used for direct orders
     val paymentOption: PaymentOption
 )
 
@@ -180,6 +191,12 @@ data class OrderItemDTO(
     val id: Long?,
     val orderId: Long?,
     val menuItemId: Long?,
+    val quantity: Int,
+    val price: BigDecimal
+)
+
+data class OrderItemTemp(
+    val menuItem: MenuItem,
     val quantity: Int,
     val price: BigDecimal
 )
@@ -204,7 +221,6 @@ fun OrderItem.toDto() = OrderItemDTO(
 )
 
 data class PaymentRequest(
-    val userId: Long,
     val amount: BigDecimal,
     val paymentOption: PaymentOption
 )
@@ -228,3 +244,64 @@ fun PaymentTransaction.toDto(): PaymentTransactionDTO = PaymentTransactionDTO(
     paymentStatus = this.paymentStatus,
     transactionTime = this.transactionTime
 )
+
+data class CardDTO(
+    val id: Long?,
+    val cardNumber: String,
+    val expiryDate: String,
+    val cardHolderName: String,
+    val cardType: CardType,
+    val balance: BigDecimal,
+    val isDefault: Boolean
+)
+
+data class AddCardRequest(
+    val cardNumber: String,
+    val expiryDate: String,
+    val cardHolderName: String,
+    val cardType: CardType,
+    val balance: BigDecimal
+)
+
+fun Card.toDto() = CardDTO(
+    id = this.id,
+    cardNumber = this.cardNumber.takeLast(4).padStart(16, '*'),
+    expiryDate = this.expiryDate,
+    cardHolderName = this.cardHolderName,
+    cardType = this.cardType,
+    balance = this.balance,
+    isDefault = this.isDefault
+)
+
+data class AddToCartRequest(
+    val menuItemId: Long,
+    val quantity: Int
+)
+
+data class CartItemDTO(
+    val id: Long?,
+    val menuItemId: Long,
+    val name: String,
+    val price: BigDecimal,
+    val quantity: Int,
+    val subtotal: BigDecimal
+)
+
+data class CartDTO(
+    val id: Long?,
+    val customerId: Long,
+    val restaurantId: Long,
+    val items: List<CartItemDTO>,
+    val subtotal: BigDecimal,
+    val serviceCharge: BigDecimal,
+    val deliveryFee: BigDecimal,
+    val discount: BigDecimal,
+    val total: BigDecimal
+)
+
+
+data class UpdateCardBalanceRequest(
+    @DecimalMin(value = "0.0", message = "Balans 0 dan katta bo'lishi kerak")
+    val amount: BigDecimal
+)
+

@@ -21,9 +21,6 @@ repositories {
     mavenCentral()
 }
 
-
-
-
 dependencies {
     implementation("org.hashids:hashids:1.0.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
@@ -36,12 +33,21 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
-    implementation ("org.springframework.boot:spring-boot-starter")
-    implementation ("io.jsonwebtoken:jjwt-api:0.11.5")
+    implementation("org.springframework.boot:spring-boot-starter")
+    implementation("io.jsonwebtoken:jjwt-api:0.11.5")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.14.+")
-    runtimeOnly ("io.jsonwebtoken:jjwt-impl:0.11.5")
-    runtimeOnly ("io.jsonwebtoken:jjwt-jackson:0.11.5")
+    runtimeOnly("io.jsonwebtoken:jjwt-impl:0.11.5")
+    runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.11.5")
     runtimeOnly("org.postgresql:postgresql")
+    testImplementation("org.springframework.boot:spring-boot-starter-test") {
+        exclude(module = "mockito-core")
+    }
+    testImplementation("org.junit.jupiter:junit-jupiter:5.9.3")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:5.1.0")
+    testImplementation("com.ninja-squad:springmockk:4.0.2")
+    testImplementation("org.mockito:mockito-junit-jupiter:5.3.1")
+    testImplementation("com.h2database:h2")
+    testImplementation("io.mockk:mockk:1.13.8")
 }
 
 kotlin {
@@ -52,4 +58,17 @@ kotlin {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+    kotlinOptions {
+        freeCompilerArgs = listOf("-Xjsr305=strict")
+        jvmTarget = "19"
+    }
+}
+
+allOpen {
+    annotation("jakarta.persistence.Entity")
+    annotation("jakarta.persistence.MappedSuperclass")
+    annotation("jakarta.persistence.Embeddable")
 }

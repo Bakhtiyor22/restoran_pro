@@ -20,3 +20,5 @@ spring:
         implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyComponentPathImpl
   main:
     allow-bean-definition-overriding: true
+server:
+    port: 8080
