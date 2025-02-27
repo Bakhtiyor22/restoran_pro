@@ -275,7 +275,7 @@ fun Card.toDto() = CardDTO(
 
 data class AddToCartRequest(
     val menuItemId: Long,
-    val quantity: Int
+    val quantity: Int = 1
 )
 
 data class CartItemDTO(

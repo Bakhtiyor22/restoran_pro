@@ -82,16 +82,18 @@ interface CardService {
 
 interface CartService {
     fun addToCart(userId: Long, restaurantId: Long, request: AddToCartRequest): CartDTO
-    fun getCart(userId: Long): CartDTO
-    fun checkout(userId: Long, paymentRequest: PaymentRequest): OrderDTO
+    fun getUserCart(userId: Long): CartDTO
+    fun updateCartItemQuantity(userId: Long, menuItemId: Long, quantity: Int): CartDTO
+    fun getCheckoutPreview(userId: Long): CartDTO
+    fun completeOrder(userId: Long, paymentRequest: PaymentRequest): OrderDTO
     fun removeFromCart(userId: Long, menuItemId: Long)
+    fun clearCart(userId: Long): CartDTO
 }
 
 @Service
 class AuthServiceImpl(
     private val otpService: OTPService,
     private val userRepository: UserRepository,
-    private val otpRepository: OtpRepository,
     private val jwtUtils: JwtUtils,
     private val passwordEncoder: PasswordEncoder,
     private val messageSourceService: MessageSourceService
@@ -454,41 +456,69 @@ class CartServiceImpl(
 ) : CartService {
 
     override fun addToCart(userId: Long, restaurantId: Long, request: AddToCartRequest): CartDTO {
-        if (request.quantity <= 0) {
-            throw ValidationException(request.quantity)
-        }
+        val quantity = if (request.quantity <= 0) 1 else request.quantity
 
-        val cart = cartRepository.findByCustomerId(userId)
-            ?: createNewCart(userId, restaurantId)
+        val cart = cartRepository.findByCustomerId(userId) ?: createNewCart(userId, restaurantId)
 
-        if (cart.restaurant.id != restaurantId) {
-            throw ValidationException(restaurantId)
-        }
+        if (cart.restaurant.id != restaurantId) throw ValidationException(restaurantId)
 
         val menuItem = menuItemRepository.findById(request.menuItemId)
             .orElseThrow { ResourceNotFoundException(request.menuItemId) }
 
         val cartItem = cart.items.find { it.menuItem.id == request.menuItemId }
         if (cartItem != null) {
-            cartItem.quantity += request.quantity
+            cartItem.quantity += quantity
         } else {
-            cart.items.add(CartItem(cart, menuItem, request.quantity))
+            cart.items.add(CartItem(menuItem, quantity))
         }
 
-        return cartRepository.save(cart).toDto()
+        return cartRepository.save(cart).toDto(false)
     }
 
-    override fun getCart(userId: Long): CartDTO {
-        return cartRepository.findByCustomerId(userId)?.toDto()
-            ?: throw ResourceNotFoundException(userId)
+    override fun getUserCart(userId: Long): CartDTO {
+        val cart = cartRepository.findByCustomerId(userId) ?: throw ResourceNotFoundException(userId)
+
+        return cart.toDto(false)
     }
 
-    override fun checkout(userId: Long, paymentRequest: PaymentRequest): OrderDTO {
+    override fun getCheckoutPreview(userId: Long): CartDTO {
         val cart = cartRepository.findByCustomerId(userId)
             ?: throw ResourceNotFoundException(userId)
 
-        val totals = calculateCartTotals(cart)
-        if (totals.total != paymentRequest.amount) {
+//        println("Cart items size: ${cart.items.size}")
+        cart.items.forEach {
+            println("Item: ${it.menuItem.name}, quantity: ${it.quantity}")
+        }
+
+        val dto = cart.toDto(calculateFees = true)
+//        println("DTO items size: ${dto.items.size}")
+
+        return dto
+    }
+
+    override fun updateCartItemQuantity(userId: Long, menuItemId: Long, quantity: Int): CartDTO {
+        val cart = cartRepository.findByCustomerId(userId)
+            ?: throw ResourceNotFoundException(userId)
+
+        val cartItem = cart.items.find { it.menuItem.id == menuItemId }
+            ?: throw ResourceNotFoundException(menuItemId)
+
+        if (quantity <= 0) {
+            cart.items.removeIf { it.menuItem.id == menuItemId }
+        } else {
+            cartItem.quantity = quantity
+        }
+
+        return cartRepository.save(cart).toDto(false)
+    }
+
+    override fun completeOrder(userId: Long, paymentRequest: PaymentRequest): OrderDTO {
+        val cart = cartRepository.findByCustomerId(userId)
+            ?: throw ResourceNotFoundException(userId)
+
+        val cartWithFees = cart.toDto(calculateFees = true)
+
+        if (cartWithFees.total != paymentRequest.amount) {
             throw ValidationException(paymentRequest.amount)
         }
 
@@ -497,9 +527,15 @@ class CartServiceImpl(
             throw ValidationException(paymentResult.message)
         }
 
-        val order = createOrderFromCart(cart, totals)
-        cartRepository.delete(cart)
+        val order = createOrderFromCart(cart, CartTotals(
+            subtotal = cartWithFees.subtotal,
+            serviceCharge = cartWithFees.serviceCharge,
+            deliveryFee = cartWithFees.deliveryFee,
+            discount = cartWithFees.discount,
+            total = cartWithFees.total
+        ))
 
+        cartRepository.delete(cart)
         return order.toDto()
     }
 
@@ -512,22 +548,16 @@ class CartServiceImpl(
         cartRepository.save(cart)
     }
 
+    override fun clearCart(userId: Long): CartDTO {
+        val cart = cartRepository.findByCustomerId(userId) ?: throw ResourceNotFoundException(userId)
+        cart.items.clear()
+        return cartRepository.save(cart).toDto(false)
+    }
+
     private fun createNewCart(userId: Long, restaurantId: Long): Cart {
         val restaurant = restaurantRepository.findById(restaurantId)
             .orElseThrow { ResourceNotFoundException(restaurantId) }
         return Cart(customerId = userId, restaurant = restaurant)
-    }
-
-    private fun calculateCartTotals(cart: Cart): CartTotals {
-        val subtotal = cart.items.fold(BigDecimal.ZERO) { acc, item ->
-            acc + (item.menuItem.price * BigDecimal(item.quantity))
-        }
-        val serviceCharge = subtotal.multiply(cart.serviceChargePercent)
-            .divide(BigDecimal(100))
-        val discount = subtotal.multiply(cart.discountPercent)
-            .divide(BigDecimal(100))
-        val total = subtotal.plus(serviceCharge).plus(cart.deliveryFee).minus(discount)
-        return CartTotals(subtotal, serviceCharge, cart.deliveryFee, discount, total)
     }
 
     private data class CartTotals(
@@ -567,13 +597,23 @@ class CartServiceImpl(
     }
 }
 
-fun Cart.toDto(): CartDTO {
+fun Cart.toDto(calculateFees: Boolean = false): CartDTO {
     val subtotal = items.fold(BigDecimal.ZERO) { acc, item ->
         acc + (item.menuItem.price * BigDecimal(item.quantity))
     }
-    val serviceCharge = subtotal.multiply(serviceChargePercent).divide(BigDecimal(100))
-    val discount = subtotal.multiply(discountPercent).divide(BigDecimal(100))
+
+    val serviceCharge = if (calculateFees) {
+        subtotal.multiply(serviceChargePercent).divide(BigDecimal(100))
+    } else BigDecimal.ZERO
+
+    val discount = if (calculateFees) {
+        subtotal.multiply(discountPercent).divide(BigDecimal(100))
+    } else BigDecimal.ZERO
+
+    val deliveryFee = if (calculateFees) this.deliveryFee else BigDecimal.ZERO
+
     val total = subtotal.plus(serviceCharge).plus(deliveryFee).minus(discount)
+
     return CartDTO(
         id = id,
         customerId = customerId,

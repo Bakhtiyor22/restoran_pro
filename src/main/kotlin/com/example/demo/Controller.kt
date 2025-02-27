@@ -159,8 +159,17 @@ class CartController(
     fun addToCart(@PathVariable userId: Long, @PathVariable restaurantId: Long, @RequestBody request: AddToCartRequest) = cartService.addToCart(userId, restaurantId, request)
 
     @GetMapping("/{userId}")
-    fun getCart(@PathVariable userId: Long) = cartService.getCart(userId)
+    fun getCart(@PathVariable userId: Long) = cartService.getUserCart(userId)
 
-    @PostMapping("/{userId}/checkout")
-    fun checkout(@PathVariable userId: Long, @RequestBody paymentRequest: PaymentRequest) = cartService.checkout(userId, paymentRequest)
+    @GetMapping("/{userId}/checkout")
+    fun getCheckoutPreview(@PathVariable userId: Long) = cartService.getCheckoutPreview(userId)
+
+    @PostMapping("/{userId}/complete")
+    fun completeOrder(@PathVariable userId: Long, @RequestBody paymentRequest: PaymentRequest) = cartService.completeOrder(userId, paymentRequest)
+
+    @PutMapping("/{userId}/clear")
+    fun clearCart(@PathVariable userId: Long) = cartService.clearCart(userId)
+
+    @PatchMapping("/{userId}/{menuItemId}")
+    fun removeFromCart(@PathVariable userId: Long, @PathVariable menuItemId: Long ) = cartService.removeFromCart(userId, menuItemId)
 }

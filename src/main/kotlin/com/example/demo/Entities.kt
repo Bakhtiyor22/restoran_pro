@@ -171,23 +171,27 @@ class Cart(
     var customerId: Long,
     @ManyToOne
     var restaurant: Restaurant,
-    @OneToMany(mappedBy = "cart", cascade = [CascadeType.ALL], orphanRemoval = true)
+    @OneToMany(mappedBy = "cart", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
     var items: MutableList<CartItem> = mutableListOf(),
-    var serviceChargePercent: BigDecimal = BigDecimal("5.0"),
-    var deliveryFee: BigDecimal = BigDecimal("10000"),
+    var serviceChargePercent: BigDecimal = BigDecimal.ZERO,
+    var deliveryFee: BigDecimal = BigDecimal.ZERO,
     var discountPercent: BigDecimal = BigDecimal.ZERO,
-) : BaseEntity()
+) : BaseEntity() {
+    fun addItem(item: CartItem) {
+        items.add(item)
+        item.cart = this
+    }
+}
 
 @Entity
 @Table(name = "cart_items")
 class CartItem(
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "cart_id")
-    val cart: Cart,
-
-    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "menu_item_id")
     val menuItem: MenuItem,
-
     var quantity: Int
-) : BaseEntity()
+) : BaseEntity() {
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cart_id")
+    lateinit var cart: Cart
+}
