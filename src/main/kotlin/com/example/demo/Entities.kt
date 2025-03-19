@@ -1,5 +1,4 @@
 package com.example.demo
-
 import jakarta.persistence.*
 import org.hibernate.annotations.ColumnDefault
 import org.springframework.data.annotation.CreatedBy
@@ -8,6 +7,7 @@ import org.springframework.data.annotation.LastModifiedBy
 import org.springframework.data.annotation.LastModifiedDate
 import org.springframework.data.jpa.domain.support.AuditingEntityListener
 import java.math.BigDecimal
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.util.*
 
@@ -34,14 +34,12 @@ class User(
 ) : BaseEntity()
 
 @Entity
+@Table(name = "addresses")
 class Address(
     val addressLine: String,
     val city: String,
-    val state: String,
-    val postalCode: String,
     val longitude: Float,
     val latitude: Float,
-
     @ManyToOne @JoinColumn(name = "user_id") private var user: User? = null
 ) : BaseEntity()
 
@@ -62,53 +60,38 @@ class Restaurant(
     var contact: String,
     var location: String
 ) : BaseEntity() {
-    @OneToMany(mappedBy = "restaurant", cascade = [CascadeType.ALL], orphanRemoval = true)
-    var menus: MutableList<Menu> = mutableListOf()
+    @OneToMany(mappedBy = "restaurant", cascade = [CascadeType.ALL], orphanRemoval = true) var categories: MutableList<Category> = mutableListOf()
 }
 
 @Entity
-@Table(name = "menu")
-class Menu(
+@Table(name = "categories")
+class Category(
     var name: String,
-    var description: String?,
-    var category: MenuCategory,
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "restaurant_id")
-    var restaurant: Restaurant
-) : BaseEntity() {
-    @OneToMany(mappedBy = "menu", cascade = [CascadeType.ALL], orphanRemoval = true)
-    var menuItems: MutableList<MenuItem> = mutableListOf()
-}
+    var description: String,
+    @ManyToOne(fetch = FetchType.EAGER) @JoinColumn(name = "restaurant_id") var restaurant: Restaurant
+) : BaseEntity()
 
 @Entity
-@Table(name = "menu_item")
-class MenuItem(
+@Table(name = "products")
+class Product(
     var name: String,
     var price: BigDecimal,
-    var description: String?,
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "menu_id")
-    var menu: Menu
+    var description: String,
+    var image: String?,
+    @ManyToOne @JoinColumn(name = "category_id") var category: Category,
 ) : BaseEntity()
 
 @Entity
 @Table(name = "orders")
 class Order(
     var customerId: Long,
-    @ManyToOne
-    var restaurant: Restaurant,
+    @ManyToOne var restaurant: Restaurant,
+    @Enumerated(EnumType.STRING) var paymentOption: PaymentOption,
+    @Enumerated(EnumType.STRING) var status: OrderStatus,
+    var orderDate: LocalDate,
     var totalAmount: BigDecimal,
-    var subtotal: BigDecimal,
-    var serviceCharge: BigDecimal,
-    var deliveryFee: BigDecimal,
-    var discount: BigDecimal,
-    @Enumerated(EnumType.STRING)
-    var paymentOption: PaymentOption,
-    @Enumerated(EnumType.STRING)
-    var status: OrderStatus,
-    var orderDate: LocalDateTime,
-    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true)
-    var orderItems: MutableList<OrderItem> = mutableListOf()
+    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true) var orderItems: MutableList<OrderItem> = mutableListOf(),
+    @ManyToOne @JoinColumn(name = "address_id") var address: Address
 ) : BaseEntity()
 
 @Entity
@@ -118,8 +101,8 @@ class OrderItem(
     @JoinColumn(name = "order_id")
     var order: Order,
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "menu_item_id")
-    var menuItem: MenuItem,
+    @JoinColumn(name = "product_id")
+    var product: Product,
     var quantity: Int,
     var price: BigDecimal
 ) : BaseEntity()
@@ -130,17 +113,18 @@ class PaymentTransaction(
     val userId: Long,
     val amount: BigDecimal,
     val orderId: Long?,
-
     @Enumerated(EnumType.STRING)
     val paymentOption: PaymentOption,
 
     @Enumerated(EnumType.STRING)
     var paymentStatus: PaymentStatus,
+    @Column(nullable = false) var isRefund: Boolean = false,
 
     val transactionTime: LocalDateTime = LocalDateTime.now(),
 
     val transactionId: String = generateTransactionId()
 ): BaseEntity() {
+    var retryCount: Int = 0
     companion object {
         fun generateTransactionId(): String = "TX" + System.currentTimeMillis()
     }
@@ -153,7 +137,6 @@ class Card(
     var expiryDate: String,
     var cardHolderName: String,
     var isDefault: Boolean = false,
-    var cardStatus: Boolean = true,
 
     @Enumerated(EnumType.STRING)
     var cardType: CardType,
@@ -165,33 +148,3 @@ class Card(
     var user: User
 ): BaseEntity()
 
-@Entity
-@Table(name = "cart")
-class Cart(
-    var customerId: Long,
-    @ManyToOne
-    var restaurant: Restaurant,
-    @OneToMany(mappedBy = "cart", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
-    var items: MutableList<CartItem> = mutableListOf(),
-    var serviceChargePercent: BigDecimal = BigDecimal.ZERO,
-    var deliveryFee: BigDecimal = BigDecimal.ZERO,
-    var discountPercent: BigDecimal = BigDecimal.ZERO,
-) : BaseEntity() {
-    fun addItem(item: CartItem) {
-        items.add(item)
-        item.cart = this
-    }
-}
-
-@Entity
-@Table(name = "cart_items")
-class CartItem(
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "menu_item_id")
-    val menuItem: MenuItem,
-    var quantity: Int
-) : BaseEntity() {
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "cart_id")
-    lateinit var cart: Cart
-}

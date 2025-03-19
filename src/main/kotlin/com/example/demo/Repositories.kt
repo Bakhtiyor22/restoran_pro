@@ -1,6 +1,7 @@
 package com.example.demo
 
 import jakarta.persistence.EntityManager
+import jakarta.persistence.LockModeType
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.domain.Specification
@@ -12,7 +13,10 @@ import org.springframework.data.repository.NoRepositoryBean
 import org.springframework.data.repository.findByIdOrNull
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.context.annotation.Configuration
+import org.springframework.data.jpa.repository.Lock
+import org.springframework.data.jpa.repository.Query
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories
+import org.springframework.data.repository.query.Param
 import org.springframework.stereotype.Repository
 
 @Configuration
@@ -60,30 +64,34 @@ interface OtpRepository : BaseRepository<OtpEntity> {
 }
 
 @Repository
-interface AddressRepository : BaseRepository<Address>
+interface AddressRepository : BaseRepository<Address>{
+    fun findByUserIdAndDeletedFalse(customerId: Long): Address?
+}
 
 @Repository
 interface RestaurantRepository : BaseRepository<Restaurant>
 
 @Repository
-interface MenuRepository : BaseRepository<Menu> {
-    fun findByCategory(category: MenuCategory): Menu?
+interface CategoryRepository : BaseRepository<Category> {
+    fun findByNameIgnoreCaseAndRestaurantIdAndDeletedFalse(name: String, id: Long): Set<Category>?
 }
 
 @Repository
-interface MenuItemRepository : BaseRepository<MenuItem> {
-    fun findAllByMenuId(menuId: Long, pageable: Pageable): Page<MenuItem>
-    fun findByIdAndMenuId(menuItemId: Long, menuId: Long): MenuItem?
-    fun findByNameAndMenuId(name: String, menuId: Long): MenuItem?
+interface ProductRepository : BaseRepository<Product> {
+    fun findByNameIgnoreCaseAndCategoryIdAndDeletedFalse(name: String, id: Long): Product?
+    @Query("SELECT p FROM Product p WHERE p.id IN :ids AND p.deleted = false")
+    fun findAllByIdAndDeletedFalse(@Param("ids") ids: List<Long>): List<Product>
 }
 
-@Repository
 interface OrderRepository : BaseRepository<Order> {
-    fun findAllByCustomerId(customerId: Long, pageable: Pageable): Page<Order>
+    fun findByCustomerId(customerId: Long, pageable: Pageable): Page<Order>
+    fun findByRestaurantId(restaurantId: Long, pageable: Pageable): Page<Order>
+    fun findByRestaurantIdAndStatus(restaurantId: Long, status: OrderStatus, pageable: Pageable): Page<Order>
 }
 
-@Repository
-interface OrderItemRepository : BaseRepository<OrderItem>
+interface OrderItemRepository : BaseRepository<OrderItem> {
+    fun findByOrderId(orderId: Long): List<OrderItem>
+}
 
 @Repository
 interface PaymentRepository : BaseRepository<PaymentTransaction> {
@@ -93,11 +101,14 @@ interface PaymentRepository : BaseRepository<PaymentTransaction> {
 @Repository
 interface CardRepository : BaseRepository<Card> {
     fun findByUserIdAndDeletedFalse(userId: Long): List<Card>
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     fun findByUserIdAndIsDefaultTrueAndDeletedFalse(userId: Long): Card?
     fun findByIdAndUserIdAndDeletedFalse(cardId: Long, userId: Long): Card?
 }
 
 @Repository
-interface CartRepository : BaseRepository<Cart> {
-    fun findByCustomerId(userId: Long): Cart?
+interface DiscountRepository : BaseRepository<Discount> {
+    fun findByProductIdAndDeletedFalse(productId: Long): List<Discount>
+    fun findByCategoryIdAndDeletedFalse(categoryId: Long): List<Discount>
+    fun findByIsActiveAndDeletedFalse(isActive: Boolean): List<Discount>
 }

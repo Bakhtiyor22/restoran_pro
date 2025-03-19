@@ -10,7 +10,7 @@ enum class Roles {
 }
 
 enum class PaymentOption {
-    CASH, CARD, ONLINE
+    CASH, CARD
 }
 
 enum class PaymentStatus {
@@ -20,7 +20,7 @@ enum class PaymentStatus {
 }
 
 enum class OrderStatus {
-    PENDING, IN_PROGRESS, PAID, CANCELLED
+    ACCEPTED, PENDING, IN_PROGRESS, CANCELLED, COMPLETED, REFUNDED, READY, REJECTED
 }
 
 enum class ErrorCode(val code: Int) {
@@ -38,21 +38,13 @@ enum class UserStatus {
 }
 
 enum class MessageKey {
-    USER_NOT_FOUND,
-    RESOURCE_NOT_FOUND,
-    INVALID_INPUT,
-    OTP_REQUEST
+    OTP_REQUEST,
+    NEGATIVE_PRICE
 }
 
 enum class PaginationFieldName {
     PAGE,
     LIMIT
-}
-
-enum class MenuCategory {
-    FOODS,
-    DRINKS,
-    SALADS
 }
 
 data class CardTypePattern(

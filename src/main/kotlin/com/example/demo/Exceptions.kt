@@ -1,5 +1,6 @@
 package com.example.demo
 
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.context.i18n.LocaleContextHolder
 import org.springframework.context.support.ResourceBundleMessageSource
 import org.springframework.http.HttpStatus
@@ -59,6 +60,7 @@ class ValidationException(private val arg: Any? = null) : RestoranProException()
 
 @RestControllerAdvice
 class GlobalExceptionHandler(
+    @Qualifier("messageSource")
     private val errorMessageSource: ResourceBundleMessageSource
 ) {
 

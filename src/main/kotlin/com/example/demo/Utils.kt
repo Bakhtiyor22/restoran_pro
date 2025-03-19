@@ -1,14 +1,13 @@
 package com.example.demo
 
+import io.jsonwebtoken.JwtParserBuilder
 import io.jsonwebtoken.Jwts
 import io.jsonwebtoken.SignatureAlgorithm
 import io.jsonwebtoken.security.Keys
+import org.springframework.context.i18n.LocaleContextHolder
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.stereotype.Component
-import java.time.LocalDateTime
-import java.time.ZoneId
-import java.time.ZonedDateTime
 import java.util.*
 import javax.crypto.SecretKey
 
@@ -22,7 +21,6 @@ fun validatePhoneNumber(phoneNumber: String): Boolean {
 
 @Component
 class JwtUtils {
-
     private val secret: String = System.getenv("JWT_SECRET")
         ?: throw IllegalStateException("JWT_SECRET environment variable is not set")
 
@@ -30,17 +28,39 @@ class JwtUtils {
         Keys.hmacShaKeyFor(Base64.getDecoder().decode(secret))
     }
 
-    fun generateToken(user: User): TokenResponse {
-        val token = Jwts.builder()
+    private val accessTokenExpiry = 15 * 60 * 1000L
+
+    private val refreshTokenExpiry = 7 * 24 * 60 * 60 * 1000L
+
+    fun generateToken(user: User, locale: String? = null): TokenResponse {
+        val now = Date()
+
+        val accessToken = Jwts.builder()
             .setSubject(user.phoneNumber)
             .claim("role", user.role.name)
             .claim("userId", user.id)
-            .setIssuedAt(Date())
-            .setExpiration(Date(System.currentTimeMillis() + 3600000))
+            .claim("locale", locale ?: LocaleContextHolder.getLocale().language)
+            .claim("tokenType", "ACCESS")
+            .setIssuedAt(now)
+            .setExpiration(Date(now.time + accessTokenExpiry))
             .signWith(key, SignatureAlgorithm.HS256)
             .compact()
 
-        return TokenResponse(token, token, 3600)
+        val refreshToken = Jwts.builder()
+            .setSubject(user.phoneNumber)
+            .claim("locale", locale ?: LocaleContextHolder.getLocale().language)
+            .claim("tokenType", "REFRESH")
+            .setIssuedAt(now)
+            .setExpiration(Date(now.time + refreshTokenExpiry))
+            .signWith(key, SignatureAlgorithm.HS256)
+            .compact()
+
+        return TokenResponse(accessToken, refreshToken, accessTokenExpiry / 1000)
+    }
+
+    fun extractLocale(token: String): String {
+        val claims = Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(token).body
+        return claims.get("locale", String::class.java) ?: "uz"
     }
 
     fun validateToken(token: String): Boolean {
@@ -57,6 +77,10 @@ class JwtUtils {
 
     fun getAuthentication(token: String, userDetails: UserDetails): UsernamePasswordAuthenticationToken {
         return UsernamePasswordAuthenticationToken(userDetails, null, userDetails.authorities)
+    }
+
+    fun getJwtParser(): JwtParserBuilder {
+        return Jwts.parserBuilder().setSigningKey(key)
     }
 }
 

@@ -1,5 +1,6 @@
 package com.example.demo
 
+import io.swagger.v3.oas.models.Components
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
@@ -27,6 +28,16 @@ import org.springframework.web.servlet.config.annotation.InterceptorRegistry
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 import org.springframework.web.servlet.i18n.AcceptHeaderLocaleResolver
 import org.springframework.web.servlet.i18n.LocaleChangeInterceptor
+import io.swagger.v3.oas.models.OpenAPI
+import io.swagger.v3.oas.models.info.Info
+import io.swagger.v3.oas.models.media.StringSchema
+import io.swagger.v3.oas.models.security.SecurityRequirement
+import io.swagger.v3.oas.models.security.SecurityScheme
+import io.swagger.v3.oas.models.parameters.Parameter
+import org.springframework.context.i18n.LocaleContextHolder
+import org.springframework.data.redis.connection.RedisConnectionFactory
+import org.springframework.data.redis.core.RedisTemplate
+import org.springframework.data.redis.serializer.StringRedisSerializer
 import java.util.*
 
 
@@ -43,9 +54,9 @@ class AppInit(
 
         if (userRepository.findByRole(managerRole) == null) {
             val manager = User(
-                username =  "MANAGER",
+                username =  "DEV",
                 phoneNumber = "+998900000001",
-                password = passwordEncoder.encode("manager123"),
+                password = passwordEncoder.encode("dev123"),
                 role = managerRole
             )
             userRepository.save(manager)
@@ -53,9 +64,9 @@ class AppInit(
 
         if (userRepository.findByRole(devRole) == null) {
             val dev = User(
-                username = "DEV",
+                username = "Manager",
                 phoneNumber = "+998900000002",
-                password = passwordEncoder.encode("dev123"),
+                password = passwordEncoder.encode("manager123"),
                 role = devRole
             )
             userRepository.save(dev)
@@ -108,9 +119,17 @@ class SecurityConfig(
         http
             .csrf { it.disable() }
             .authorizeHttpRequests { auth ->
-                auth.requestMatchers("/api/v1/auth/**").permitAll()
+                auth.requestMatchers(
+                    "/api/v1/auth/**",
+                    "/swagger-ui/**",
+                    "/api-docs/**",
+                    "/swagger-resources/**",
+                    "/webjars/**",
+                    "/swagger-ui.html"
+                ).permitAll()
                 auth.anyRequest().authenticated()
             }
+            .cors { }
             .authenticationProvider(authenticationProvider())
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter::class.java)
 
@@ -137,6 +156,12 @@ class JwtAuthFilter(
                 val username = jwtUtils.extractUsername(token)
                 val userDetails = userService.loadUserByUsername(username)
                 val authToken = jwtUtils.getAuthentication(token, userDetails)
+
+                val locale = jwtUtils.extractLocale(token)
+                val localeObj = Locale.forLanguageTag(locale)
+                LocaleContextHolder.setLocale(localeObj)
+                logger.debug("Set user locale to: ${localeObj.language} for request ${request.requestURI}")
+
                 SecurityContextHolder.getContext().authentication = authToken
                 filterChain.doFilter(request, response)
                 return
@@ -150,11 +175,13 @@ class JwtAuthFilter(
 @Configuration
 class AppConfig : WebMvcConfigurer {
 
-    @Bean
-    fun messageSource(): MessageSource {
+    @Bean(name = ["messageSource"])
+    fun messageSource(): ResourceBundleMessageSource {
         val source = ResourceBundleMessageSource()
         source.setBasenames("error")
         source.setDefaultEncoding("UTF-8")
+        source.setUseCodeAsDefaultMessage(false)
+        source.setFallbackToSystemLocale(false)
         return source
     }
 
@@ -176,3 +203,62 @@ class AppConfig : WebMvcConfigurer {
         registry.addInterceptor(localeChangeInterceptor())
     }
 }
+
+@Configuration
+class SwaggerConfig {
+
+    @Bean
+    fun customOpenAPI(): OpenAPI {
+        val securitySchemeName = "bearerAuth"
+        return OpenAPI()
+            .info(
+                Info()
+                    .title("Restaurant Pro Spring Boot API")
+                    .description("API documentation")
+                    .version("1.0")
+            )
+            .components(
+                Components()
+                    .addSecuritySchemes(securitySchemeName,
+                        SecurityScheme()
+                            .name(securitySchemeName)
+                            .type(SecurityScheme.Type.HTTP)
+                            .scheme("bearer")
+                            .bearerFormat("JWT")
+                    )
+            )
+            .addSecurityItem(SecurityRequirement().addList(securitySchemeName))
+    }
+
+    @Bean
+    fun globalHeaderOpenApiCustomiser(): org.springdoc.core.customizers.OpenApiCustomizer {
+        return org.springdoc.core.customizers.OpenApiCustomizer {  openApi ->
+            openApi.paths?.forEach { (_, pathItem) ->
+                pathItem.readOperations().forEach { operation ->
+                    operation.addParametersItem(
+                        Parameter().apply {
+                            `in` = "header"
+                            name = "Accept-Language"
+                            description = "Localization language (e.g., uz, ru, en)"
+                            required = false
+                            schema = StringSchema()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Configuration
+class RedisConfig {
+    @Bean
+    fun redisTemplate(connectionFactory: RedisConnectionFactory): RedisTemplate<String, Any> {
+        val template = RedisTemplate<String, Any>()
+        template.connectionFactory = connectionFactory
+        template.keySerializer = StringRedisSerializer()
+        template.valueSerializer = StringRedisSerializer()
+        return template
+    }
+}
+

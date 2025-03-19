@@ -20,5 +20,22 @@ spring:
         implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyComponentPathImpl
   main:
     allow-bean-definition-overriding: true
-server:
-    port: 8080
+  profiles:
+    active: dev
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      connect-timeout: 2000
+      timeout: 1000
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui
+
+management:
+  health:
+    redis:
+      enabled: false

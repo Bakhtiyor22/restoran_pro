@@ -4,7 +4,6 @@ import jakarta.validation.constraints.DecimalMin
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
-import org.springframework.data.domain.PageRequest
 import java.math.BigDecimal
 import java.time.LocalDateTime
 
@@ -18,7 +17,7 @@ data class BaseMessage(
 }
 
 data class OtpRequest(
-    @field:Pattern(regexp = "^\\+998\\d{9}$", message = "Invalid phone number format")
+    @Pattern(regexp = "^\\+998\\d{9}$", message = "Invalid phone number format")
     val phoneNumber: String = ""
 )
 
@@ -36,21 +35,11 @@ data class LoginRequest(
 data class TokenResponse(
     val accessToken: String,
     val refreshToken: String = "",
-    val expired: Int // second
+    val expired: Long // second
 )
 
-data class CreateRestaurantRequest(
-    @NotBlank
-    @Size(max = 100)
-    val name: String,
-
-    @NotBlank
-    @Size(max = 20)
-    val contact: String,
-
-    @field:NotBlank
-    @field:Size(max = 200)
-    val location: String
+data class RefreshTokenRequest(
+    @NotBlank val refreshToken: String
 )
 
 data class CreateUserRequest(
@@ -84,8 +73,6 @@ data class AddressDTO(
     val id: Long?,
     val addressLine: String,
     val city: String,
-    val state: String,
-    val postalCode: String,
     val longitude: Float,
     val latitude: Float
 )
@@ -93,14 +80,8 @@ data class AddressDTO(
 data class AddressRequest(
     val addressLine: String,
     val city: String,
-    val state: String,
-    val postalCode: String,
     val longitude: Float,
     val latitude: Float
-)
-
-data class UpdateOrderStatusRequest(
-    val newStatus: OrderStatus
 )
 
 fun User.toDto() = UserDTO(
@@ -114,114 +95,144 @@ fun Address.toDto() = AddressDTO(
     id = this.id,
     addressLine = this.addressLine,
     city = this.city,
-    state = this.state,
-    postalCode = this.postalCode,
     longitude = this.longitude,
     latitude = this.latitude
 )
 
-data class CreateMenuRequest(
+data class CreateRestaurantRequest(
+    val name: String,
+    val contact: String,
+    val location: String
+)
+
+data class RestaurantDTO(
+    val id: Long,
+    val name: String,
+    val contact: String,
+    val location: String,
+)
+
+fun Restaurant.toDto() = RestaurantDTO(
+    id = this.id!!,
+    name = this.name,
+    contact = this.contact,
+    location = this.location,
+)
+
+data class CreateCategoryRequest(
     val name: String,
     val description: String?,
-    val category: MenuCategory,
     val restaurantId: Long
 )
 
-data class AddMenuItem(
-    val name: String,
-    val price: BigDecimal,
-    val description: String?
-)
-
-data class MenuDTO(
-    val id: Long,
+data class UpdateCategoryRequest(
     val name: String,
     val description: String?,
-    val category: MenuCategory,
-    val restaurantId: Long,
-    val menuItems: List<MenuItemDTO>
 )
 
-data class MenuItemDTO(
+
+data class CategoryDTO(
     val id: Long,
     val name: String,
-    val price: BigDecimal,
-    val description: String?
+    val description: String,
+    val restaurantId: Long
 )
 
-fun MenuItem.toDto() = MenuItemDTO(
-    id = this.id!!,
-    name = this.name,
-    price = this.price,
-    description = this.description
-)
-
-fun Menu.toDto() = MenuDTO(
+fun Category.toDto() = CategoryDTO(
     id = this.id!!,
     name = this.name,
     description = this.description,
-    category = this.category,
-    restaurantId = this.restaurant.id!!,
-    menuItems = this.menuItems.map { it.toDto() }
+    restaurantId = this.restaurant.id!!
 )
 
-data class OrderItemRequest(
-    val menuItemId: Long,
-    val quantity: Int
+data class ProductDTO(
+    val id: Long,
+    val name: String,
+    val price: BigDecimal,
+    val description: String?,
+    val image: String?,
+    val category: CategoryDTO
+)
+
+data class CreateProductRequest(
+    @NotBlank val name: String,
+    @DecimalMin(value = "0.01") val price: BigDecimal,
+    val description: String?,
+    val image: String?,
+    val categoryId: Long
+)
+
+data class UpdateProductRequest(
+    @NotBlank val name: String,
+    @DecimalMin(value = "0.01") val price: BigDecimal,
+    val description: String?,
+    val image: String?,
+    val categoryId: Long
+)
+
+fun Product.toDto() = ProductDTO(
+    id = this.id!!,
+    name = this.name,
+    price = this.price,
+    description = this.description,
+    image = this.image?:"",
+    category = this.category.toDto()
 )
 
 data class CreateOrderRequest(
-    val cartId: Long? = null,  // Optional - if null, direct order
-    val items: List<OrderItemRequest> = emptyList(),  // Used for direct orders
-    val paymentOption: PaymentOption
+    val restaurantId: Long,
+    val items: List<OrderItemRequest>,
+    val paymentOption: PaymentOption,
+    val deliveryAddress: AddressDTO,
+)
+
+data class OrderItemRequest(
+    val productId: Long,
+    @DecimalMin(value = "0.01") val quantity: Int
 )
 
 data class OrderDTO(
     val id: Long?,
     val customerId: Long,
     val restaurantId: Long?,
-    val totalAmount: BigDecimal,
     val paymentOption: PaymentOption,
     val status: OrderStatus,
     val orderDate: LocalDateTime,
-    val orderItems: List<OrderItemDTO>
-)
-
-data class OrderItemDTO(
-    val id: Long?,
-    val orderId: Long?,
-    val menuItemId: Long?,
-    val quantity: Int,
-    val price: BigDecimal
-)
-
-data class OrderItemTemp(
-    val menuItem: MenuItem,
-    val quantity: Int,
-    val price: BigDecimal
+    val totalAmount: BigDecimal,
+    val orderItems: List<OrderItemDTO>,
+    val addressId: AddressDTO
 )
 
 fun Order.toDto() = OrderDTO(
     id = this.id,
     customerId = this.customerId,
     restaurantId = this.restaurant.id,
-    totalAmount = this.totalAmount,
     paymentOption = this.paymentOption,
     status = this.status,
     orderDate = this.orderDate,
-    orderItems = this.orderItems.map { it.toDto() }
+    totalAmount = totalAmount,
+    orderItems = this.orderItems.map { it.toDto() },
+    addressId = address.toDto()
 )
 
 fun OrderItem.toDto() = OrderItemDTO(
     id = this.id,
     orderId = this.order.id,
-    menuItemId = this.menuItem.id,
+    productId = product.id,
     quantity = this.quantity,
     price = this.price
 )
 
+data class OrderItemDTO(
+    val id: Long?,
+    val orderId: Long?,
+    val productId: Long?,
+    val quantity: Int,
+    val price: BigDecimal
+)
+
 data class PaymentRequest(
-    val amount: BigDecimal,
+    @DecimalMin(value = "0.01") val amount: BigDecimal,
     val paymentOption: PaymentOption
 )
 
@@ -257,6 +268,7 @@ data class CardDTO(
 
 data class AddCardRequest(
     val cardNumber: String,
+    @Pattern(regexp = "^(0[1-9]|1[0-2])/([0-9]{2})$", message = "MM/YY")
     val expiryDate: String,
     val cardHolderName: String,
     val cardType: CardType,
@@ -272,33 +284,6 @@ fun Card.toDto() = CardDTO(
     balance = this.balance,
     isDefault = this.isDefault
 )
-
-data class AddToCartRequest(
-    val menuItemId: Long,
-    val quantity: Int = 1
-)
-
-data class CartItemDTO(
-    val id: Long?,
-    val menuItemId: Long,
-    val name: String,
-    val price: BigDecimal,
-    val quantity: Int,
-    val subtotal: BigDecimal
-)
-
-data class CartDTO(
-    val id: Long?,
-    val customerId: Long,
-    val restaurantId: Long,
-    val items: List<CartItemDTO>,
-    val subtotal: BigDecimal,
-    val serviceCharge: BigDecimal,
-    val deliveryFee: BigDecimal,
-    val discount: BigDecimal,
-    val total: BigDecimal
-)
-
 
 data class UpdateCardBalanceRequest(
     @DecimalMin(value = "0.0", message = "Balans 0 dan katta bo'lishi kerak")
