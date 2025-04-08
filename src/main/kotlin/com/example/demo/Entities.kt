@@ -29,18 +29,30 @@ class User(
     var phoneNumber: String,
     var password: String,
     @Enumerated(EnumType.STRING) var role: Roles,
-    @OneToMany(mappedBy = "user", fetch = FetchType.EAGER) var cards: MutableList<Card> = mutableListOf(),
-    @OneToMany(mappedBy = "user", fetch = FetchType.EAGER) var addresses: MutableList<Address> = mutableListOf()
+    var telegramChatId: Long? = null,
+    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = [CascadeType.ALL], orphanRemoval = false) var cards: MutableList<Card> = mutableListOf(),
+    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = [CascadeType.ALL], orphanRemoval = false) var addresses: MutableList<Address> = mutableListOf(),
+    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = [CascadeType.ALL], orphanRemoval = false) var orders: MutableList<Order> = mutableListOf()
+) : BaseEntity()
+
+@Entity
+@Table(name = "user_states")
+class UserState(
+    @OneToOne @JoinColumn(name = "user_id") var user: User,
+    @Enumerated(EnumType.STRING) var currentState: BotState = BotState.START,
+    @Enumerated(EnumType.STRING) var previousState: BotState? = null,
+    @Enumerated(EnumType.STRING) var menuState: MenuStates = MenuStates.MAIN_MENU,
+    @Column(columnDefinition = "TEXT") var temporaryData: String? = null  // JSON storage for state-related data
 ) : BaseEntity()
 
 @Entity
 @Table(name = "addresses")
 class Address(
-    val addressLine: String,
-    val city: String,
-    val longitude: Float,
-    val latitude: Float,
-    @ManyToOne @JoinColumn(name = "user_id") private var user: User? = null
+    var addressLine: String,
+    var city: String,
+    var longitude: Float,
+    var latitude: Float,
+    @ManyToOne @JoinColumn(name = "user_id") var user: User? = null
 ) : BaseEntity()
 
 @Entity
@@ -67,7 +79,11 @@ class Restaurant(
 @Table(name = "categories")
 class Category(
     var name: String,
-    var description: String,
+    var nameUz: String,
+    var nameRu: String,
+    var descriptionUz: String?,
+    var descriptionRu: String?,
+    var description: String?,
     @ManyToOne(fetch = FetchType.EAGER) @JoinColumn(name = "restaurant_id") var restaurant: Restaurant
 ) : BaseEntity()
 
@@ -75,8 +91,13 @@ class Category(
 @Table(name = "products")
 class Product(
     var name: String,
+    var nameUz: String,
+    var nameRu: String,
     var price: BigDecimal,
-    var description: String,
+    var currency: String,
+    var descriptionUz: String?,
+    var descriptionRu: String?,
+    var description: String?,
     var image: String?,
     @ManyToOne @JoinColumn(name = "category_id") var category: Category,
 ) : BaseEntity()
@@ -84,8 +105,8 @@ class Product(
 @Entity
 @Table(name = "orders")
 class Order(
-    var customerId: Long,
-    @ManyToOne var restaurant: Restaurant,
+    @ManyToOne @JoinColumn(name = "user_id") var user: User,
+    @ManyToOne @JoinColumn(name = "restaurant_id") var restaurant: Restaurant,
     @Enumerated(EnumType.STRING) var paymentOption: PaymentOption,
     @Enumerated(EnumType.STRING) var status: OrderStatus,
     var orderDate: LocalDate,
@@ -147,4 +168,28 @@ class Card(
     @JoinColumn(name = "user_id")
     var user: User
 ): BaseEntity()
+
+@Entity
+@Table(name = "carts")
+class Cart(
+    @ManyToOne @JoinColumn(name = "user_id") var user: User,
+    @OneToMany(mappedBy = "cart", cascade = [CascadeType.ALL], orphanRemoval = true) var items: MutableList<CartItem> = mutableListOf()
+) : BaseEntity()
+
+@Entity
+@Table(name = "cart_items")
+class CartItem(
+    @ManyToOne @JoinColumn(name = "cart_id") var cart: Cart,
+    @ManyToOne @JoinColumn(name = "product_id") var product: Product,
+    var quantity: Int
+) : BaseEntity()
+
+@Entity
+@Table(name = "order_data")
+class OrderData(
+    @ManyToOne @JoinColumn(name = "user_id") var user: User,
+    @ManyToOne @JoinColumn(name = "address_id") var address: Address? = null,
+    @Enumerated(EnumType.STRING) var paymentOption: PaymentOption = PaymentOption.CASH,
+    @ManyToOne @JoinColumn(name = "restaurant_id") var restaurant: Restaurant? = null
+) : BaseEntity()
 

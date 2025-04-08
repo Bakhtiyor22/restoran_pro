@@ -1,24 +1,37 @@
 package com.example.demo
 
-import io.jsonwebtoken.Jwts
+import com.fasterxml.jackson.core.type.TypeReference
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.itextpdf.text.*
+import com.itextpdf.text.pdf.PdfPCell
+import com.itextpdf.text.pdf.PdfPTable
+import com.itextpdf.text.pdf.PdfWriter
 import jakarta.transaction.Transactional
+import org.apache.commons.csv.CSVFormat
+import org.apache.commons.csv.CSVPrinter
+import org.apache.poi.ss.usermodel.CellType
+import org.apache.poi.xssf.usermodel.XSSFWorkbook
+import org.hibernate.Hibernate
 import org.slf4j.LoggerFactory
 import org.springframework.context.MessageSource
+import org.springframework.context.NoSuchMessageException
 import org.springframework.context.i18n.LocaleContextHolder
 import org.springframework.data.domain.Page
+import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Pageable
+import org.springframework.data.jpa.domain.Specification
 import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.security.core.authority.SimpleGrantedAuthority
-import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.security.core.userdetails.UserDetailsService
-import org.springframework.security.core.userdetails.UsernameNotFoundException
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
+import java.io.ByteArrayOutputStream
 import java.math.BigDecimal
-import java.security.GeneralSecurityException
+import java.nio.charset.StandardCharsets
+import java.time.LocalDate
 import java.time.LocalDateTime
-import java.util.concurrent.ConcurrentHashMap
+import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
@@ -32,8 +45,8 @@ interface EskizService {
 }
 
 interface AuthService {
-    fun requestOtp(otpRequest: OtpRequest): OtpIdResponse
-    fun otpLogin(otpLogin: OtpLogin): TokenResponse
+    fun requestOtp(otpRequest: OtpRequest, chatId: Long?): OtpIdResponse
+    fun otpLogin(otpLogin: OtpLogin, chatId: Long): TokenResponse
     fun login(request: LoginRequest): TokenResponse
     fun refreshToken(request: RefreshTokenRequest): TokenResponse
 }
@@ -48,7 +61,6 @@ interface UserService {
     fun getUserById(id: Long): UserDTO?
     fun updateUser(id: Long, updateUserRequest: UpdateUserRequest): UserDTO
     fun deleteUser(id: Long)
-    fun addAddress(userId: Long, addressRequest: AddressRequest): AddressDTO
 }
 
 interface RestaurantService {
@@ -71,17 +83,73 @@ interface ProductService {
     fun getALlAvailableProducts(pageable: Pageable): Page<ProductDTO>
     fun getAllProducts(pageable: Pageable): Page<ProductDTO>
     fun getProductById(id: Long): ProductDTO?
+    fun getProductsByCategoryId(id: Long): List<Product>
     fun deleteProductById(id: Long)
+    fun getNewlyAddedProducts(pageable: Pageable): Page<ProductDTO>
+    fun searchProducts(
+        name: String?,
+        categoryId: Long?,
+        minPrice: BigDecimal?,
+        maxPrice: BigDecimal?,
+        pageable: Pageable
+    ): Page<ProductDTO>
 }
 
 interface OrderService {
-    fun createOrder(customerId: Long, createOrderRequest: CreateOrderRequest): OrderDTO
+    fun createOrder(createOrderRequest: CreateOrderRequest): OrderDTO
+    fun createOrder(userId: Long, createOrderRequest: CreateOrderRequest): OrderDTO
     fun getOrderById(orderId: Long): OrderDTO
     fun getCustomerOrders(customerId: Long, pageable: Pageable): Page<OrderDTO>
     fun getRestaurantOrders(restaurantId: Long, pageable: Pageable): Page<OrderDTO>
     fun updateOrderStatus(orderId: Long, status: OrderStatus): OrderDTO
     fun processPayment(orderId: Long, paymentRequest: PaymentRequest): BaseMessage
     fun refundOrder(orderId: Long): BaseMessage
+    fun searchOrders(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?,
+        pageable: Pageable
+    ): Page<OrderDTO>
+    fun downloadOrdersAsExcel(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?
+    ): ByteArray
+    fun downloadOrdersAsPdf(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?
+    ): ByteArray
+    fun downloadOrdersAsCsv(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?
+    ): ByteArray
+    fun downloadOrdersAsJson(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?
+    ): ByteArray
 }
 
 interface PaymentService {
@@ -97,11 +165,60 @@ interface CardService {
     fun updateCardBalance(userId: Long, cardId: Long, amount: BigDecimal): CardDTO
 }
 
-interface DiscountService {
-    fun createDiscount(request: CreateDiscountRequest): DiscountDTO
-    fun getActiveDiscounts(): List<DiscountDTO>
-    fun calculateDiscount(productId: Long): BigDecimal
-    fun deactivateDiscount(discountId: Long)
+interface AddressService {
+    fun addAddress(addressRequest: AddressRequest): AddressDTO
+    fun getUserAddresses(userId: Long): List<AddressDTO>
+    fun getAddressById(addressId: Long): AddressDTO
+    fun updateAddress(addressId: Long, addressRequest: AddressRequest): AddressDTO
+    fun deleteAddress(addressId: Long)
+}
+
+interface DownloadService {
+    fun <T> generateExcel(data: List<T>, headers: List<String>, valueExtractors: List<(T) -> Any?>): ByteArray
+    fun <T> generatePdf(data: List<T>, headers: List<String>, valueExtractors: List<(T) -> Any?>): ByteArray
+    fun <T> generateCsv(data: List<T>, headers: List<String>, valueExtractors: List<(T) -> Any?>): ByteArray
+    fun <T> generateJson(data: List<T>): ByteArray
+}
+
+interface DashboardService {
+    fun getTotalSalesForCurrMonth(): Double
+    fun mostSoldProducts(): List<Product>
+    fun getSalesBetweenDates(startDate: LocalDate, endDate: LocalDate): Double
+    fun getTotalSalesForCurrDay(): Double?
+    fun getAverageDailySales(startDate: LocalDate, endDate: LocalDate): Double
+    fun getLeastSoldProducts(): List<Product>
+    fun getTopBuyers(limit: Int): List<Map<String, Any>>
+    fun getLeastSellingProductsFor30Days(): List<LeastProductsResponse>
+}
+
+interface CartService {
+    fun addItemToCart(chatId: Long, productId: Long, quantity: Int)
+    fun updateItemQuantity(chatId: Long, productId: Long, quantity: Int)
+    fun removeItemFromCart(chatId: Long, productId: Long)
+    fun getCart(chatId: Long): CartDTO
+    fun clearCart(chatId: Long)
+}
+
+interface UserStateService {
+    fun getCurrentState(chatId: Long): BotState
+    fun setState(chatId: Long, state: BotState)
+    fun setPreviousState(chatId: Long, state: BotState)
+    fun getPreviousState(chatId: Long): BotState
+    fun getMenuState(chatId: Long): MenuStates
+    fun setMenuState(chatId: Long, menuState: MenuStates)
+    fun setTemporaryData(chatId: Long, key: String, value: String)
+    fun getTemporaryData(chatId: Long, key: String): String?
+    fun clearTemporaryData(chatId: Long)
+}
+
+interface LocaleService {
+    fun getUserLocale(chatId: Long): Locale
+    fun setUserLocale(chatId: Long, languageCode: String)
+}
+
+interface LocalizedMessageService {
+    fun getMessage(key: String, chatId: Long, vararg args: Any): String
+    fun getMessage(key: String, locale: Locale, vararg args: Any): String
 }
 
 @Service
@@ -110,52 +227,69 @@ class AuthServiceImpl(
     private val userRepository: UserRepository,
     private val jwtUtils: JwtUtils,
     private val passwordEncoder: PasswordEncoder,
-    private val messageSourceService: MessageSourceService
+    private val userStateRepository: UserStateRepository,
 ) : AuthService {
-
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    override fun requestOtp(otpRequest: OtpRequest): OtpIdResponse {
+    override fun requestOtp(otpRequest: OtpRequest, chatId: Long?): OtpIdResponse {
         val phoneNumber = otpRequest.phoneNumber
         if (!validatePhoneNumber(phoneNumber)) throw InvalidInputException(phoneNumber)
 
-        val foundUser = userRepository.findByPhoneNumber(phoneNumber)
-        val userStatus = when {
-            foundUser != null -> UserStatus.EXISTS
-            else -> UserStatus.NOT_FOUND
+        // First check if there's an existing user with this chatId
+        val user = if (chatId != null) userRepository.findByTelegramChatId(chatId) else null
+
+        // Instead of directly updating the phone number, store it temporarily
+        // We'll store it in the user's temporary data until verified
+        if (user != null) {
+            // Store temporarily, but don't update user record yet
+            val userState = userStateRepository.findByUserId(user.id!!) ?: run {
+                val newState = UserState(user = user)
+                userStateRepository.save(newState)
+            }
+
+            // Store phone number as temporary data
+            val tempData = userState.temporaryData
+            val dataMap = if (tempData.isNullOrEmpty()) {
+                mutableMapOf<String, String>()
+            } else {
+                try {
+                    val objectMapper = ObjectMapper()
+                    objectMapper.readValue(tempData, object : TypeReference<MutableMap<String, String>>() {})
+                } catch (e: Exception) {
+                    mutableMapOf<String, String>()
+                }
+            }
+
+            dataMap["pending_phone_number"] = phoneNumber
+            userState.temporaryData = ObjectMapper().writeValueAsString(dataMap)
+            userStateRepository.save(userState)
+
+            logger.info("Stored pending phone number $phoneNumber for verification")
+        } else {
+            // User doesn't exist with this chatId
+            logger.error("No user found for chatId $chatId during OTP request")
+            throw ResourceNotFoundException(chatId)
         }
 
         val otpId = otpService.generateOTP(phoneNumber)
-
-        val messageText = messageSourceService.getMessage(MessageKey.OTP_REQUEST)
-        return OtpIdResponse(otpId, messageText).also { logger.info("userStatus = $userStatus") }
+        return OtpIdResponse(otpId, "OTP sent to your phone")
     }
 
-    override fun otpLogin(otpLogin: OtpLogin): TokenResponse {
+    override fun otpLogin(otpLogin: OtpLogin, chatId: Long): TokenResponse {
         val validOtp = otpService.validateOTP(otpLogin.phoneNumber, otpLogin.otp, otpLogin.otpId)
         if (!validOtp) {
             throw InvalidInputException(otpLogin.otp)
         }
 
-        var user = userRepository.findByPhoneNumber(otpLogin.phoneNumber)
-        val userStatus = when {
-            user != null -> UserStatus.EXISTS
-            else -> UserStatus.CREATED
-        }
-        if (user == null) {
-            user = User(
-                username = "",
-                phoneNumber = otpLogin.phoneNumber,
-                password = "",
-                role = Roles.CUSTOMER
-            )
-            userRepository.save(user)
-        }
+        val user = userRepository.findByTelegramChatId(chatId)
+            ?: throw ResourceNotFoundException("User not found for chat ID: $chatId")
 
-        val tokenResponse = jwtUtils.generateToken(user)
-        logger.info("userStatus = $userStatus")
-        return tokenResponse
+        user.phoneNumber = otpLogin.phoneNumber
+        userRepository.save(user)
+
+        return jwtUtils.generateToken(user)
     }
+
 
     override fun login(request: LoginRequest): TokenResponse {
         if (!validatePhoneNumber(request.phoneNumber)) throw InvalidInputException(request.phoneNumber)
@@ -238,7 +372,7 @@ class OTPServiceImpl(
 ) : OTPService {
 
     private val logger = LoggerFactory.getLogger(javaClass)
-    private val MAX_ATTEMPTS = 3
+    private val MAX_ATTEMPTS = 10
     private val ATTEMPTS_TTL = 24L // hours
 
     override fun generateOTP(phoneNumber: String): Long {
@@ -287,9 +421,6 @@ class OTPServiceImpl(
         if (isMatch) {
             record.checked = true
             otpRepository.save(record)
-
-            val otpAttemptsKey = "otp:attempts:$phoneNumber"
-            redisTemplate.delete(otpAttemptsKey)
         } else {
             logger.warn("OTP mismatch => phone=$phoneNumber, code=$otpCode, stored=${record.otpLogin}")
         }
@@ -301,7 +432,6 @@ class OTPServiceImpl(
 class UserServiceImpl(
     private val userRepository: UserRepository,
     private val passwordEncoder: PasswordEncoder,
-    private val addressRepository: AddressRepository
 ) : UserService{
     override fun createUser(createUserRequest: CreateUserRequest): UserDTO {
         if (createUserRequest.phoneNumber.isBlank()) {
@@ -330,6 +460,7 @@ class UserServiceImpl(
         return user.toDto()
     }
 
+
     override fun updateUser(id: Long, updateUserRequest: UpdateUserRequest): UserDTO {
         val user = userRepository.findById(id).orElseThrow { ResourceNotFoundException(id) }
 
@@ -355,9 +486,17 @@ class UserServiceImpl(
         existing.deleted = true
         userRepository.save(existing)
     }
+}
 
-    override fun addAddress(userId: Long, addressRequest: AddressRequest): AddressDTO {
-        val user = userRepository.findById(userId).orElseThrow { ResourceNotFoundException(userId) }
+
+@Service
+class AddressServiceImpl(
+    private val addressRepository: AddressRepository,
+    private val userRepository: UserRepository
+) : AddressService {
+    override fun addAddress(addressRequest: AddressRequest): AddressDTO {
+        val user = getCurrentUser(userRepository)
+
         val address = Address(
             addressLine = addressRequest.addressLine,
             city = addressRequest.city,
@@ -366,6 +505,44 @@ class UserServiceImpl(
             user = user
         )
         return addressRepository.save(address).toDto()
+    }
+
+    override fun getUserAddresses(userId: Long): List<AddressDTO> {
+        return addressRepository.findAllByUserIdAndDeletedFalse(userId).map { it.toDto() }
+    }
+
+    override fun getAddressById(addressId: Long): AddressDTO {
+        val currentUser = getCurrentUser(userRepository)
+        val address = addressRepository.findByIdAndDeletedFalse(addressId)
+            ?: throw ResourceNotFoundException(addressId)
+
+        if (address.user?.id != currentUser.id) throw ForbiddenException()
+
+        return address.toDto()
+    }
+
+    override fun updateAddress(addressId: Long, addressRequest: AddressRequest): AddressDTO {
+        val currentUser = getCurrentUser(userRepository)
+        val address = addressRepository.findByIdAndDeletedFalse(addressId)
+            ?: throw ResourceNotFoundException(addressId)
+
+        if (address.user?.id != currentUser.id) {
+            throw ForbiddenException()
+        }
+
+        address.addressLine = addressRequest.addressLine
+        address.city = addressRequest.city
+        address.longitude = addressRequest.longitude
+        address.latitude = addressRequest.latitude
+
+        return addressRepository.save(address).toDto()
+    }
+
+    override fun deleteAddress(addressId: Long) {
+        val address = addressRepository.findByIdAndDeletedFalse(addressId)
+            ?: throw ResourceNotFoundException(addressId)
+        address.deleted = true
+        addressRepository.save(address)
     }
 }
 
@@ -415,7 +592,11 @@ class CategoryServiceImpl(
 
         val category = Category(
             name = createCategoryRequest.name,
+            nameUz = createCategoryRequest.nameUz!!,
+            nameRu = createCategoryRequest.nameRu!!,
             description = createCategoryRequest.description?: "",
+            descriptionUz = createCategoryRequest.descriptionUz,
+            descriptionRu = createCategoryRequest.descriptionRu,
             restaurant = restaurant
         )
 
@@ -486,8 +667,13 @@ class ProductServiceImpl(
 
         val product = Product(
             name = createProductRequest.name,
+            nameUz = createProductRequest.nameUz!!,
+            nameRu = createProductRequest.nameRu!!,
             description = createProductRequest.description ?: "",
+            descriptionUz = createProductRequest.descriptionUz,
+            descriptionRu = createProductRequest.descriptionRu,
             price = createProductRequest.price,
+            currency = createProductRequest.currency.currencyCode,
             image = createProductRequest.image ?: "",
             category = category
         )
@@ -535,10 +721,63 @@ class ProductServiceImpl(
         return productRepository.findByIdAndDeletedFalse(id)?.toDto()
     }
 
+    override fun getProductsByCategoryId(id: Long): List<Product> {
+        return productRepository.findByCategoryIdAndDeletedFalse(id)
+    }
+
     override fun deleteProductById(id: Long) {
         val product = productRepository.findById(id).orElseThrow { ResourceNotFoundException(id) }
         product.deleted = true
         productRepository.save(product)
+    }
+
+    override fun getNewlyAddedProducts(pageable: Pageable): Page<ProductDTO> {
+        return productRepository.findAllSortByCreatedDateDesc(pageable).map { it.toDto() }
+    }
+
+    override fun searchProducts(
+        name: String?,
+        categoryId: Long?,
+        minPrice: BigDecimal?,
+        maxPrice: BigDecimal?,
+        pageable: Pageable
+    ): Page<ProductDTO> {
+        var spec: Specification<Product> = Specification.where(null)
+
+        name?.let {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.like(
+                    criteriaBuilder.lower(root.get("name")),
+                    "%${it.lowercase()}%"
+                )
+            }
+        }
+
+        categoryId?.let {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.equal(root.get<Category>("category").get<Long>("id"), it)
+            }
+        }
+
+        if (minPrice != null && maxPrice != null) {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.between(root.get("price"), minPrice, maxPrice)
+            }
+        } else if (minPrice != null) {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.greaterThanOrEqualTo(root.get("price"), minPrice)
+            }
+        } else if (maxPrice != null) {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.lessThanOrEqualTo(root.get("price"), maxPrice)
+            }
+        }
+
+        spec = spec.and { root, _, criteriaBuilder ->
+            criteriaBuilder.equal(root.get<Boolean>("deleted"), false)
+        }
+
+        return productRepository.findAll(spec, pageable).map { it.toDto() }
     }
 }
 
@@ -551,32 +790,21 @@ class OrderServiceImpl(
     private val addressRepository: AddressRepository,
     private val cardRepository: CardRepository,
     private val paymentRepository: PaymentRepository,
-    private val userRepository: UserRepository
+    private val userRepository: UserRepository,
+    private val downloadService: DownloadServiceImpl
 ) : OrderService {
     @Transactional
-    override fun createOrder(customerId: Long, createOrderRequest: CreateOrderRequest): OrderDTO {
-        val authenticationName = SecurityContextHolder.getContext().authentication.name
-        val loggedInUser = userRepository.findByPhoneNumber(authenticationName) ?: throw ForbiddenException()
+    override fun createOrder(createOrderRequest: CreateOrderRequest): OrderDTO {
+        val user = getCurrentUser(userRepository)
 
-        if (loggedInUser.id != customerId) throw ForbiddenException()
+        val restaurant = restaurantRepository.findByIdAndDeletedFalse(createOrderRequest.restaurantId)
+            ?: throw ResourceNotFoundException(createOrderRequest.restaurantId)
 
-        val restaurant = restaurantRepository.findByIdAndDeletedFalse(createOrderRequest.restaurantId) ?: throw ResourceNotFoundException(createOrderRequest.restaurantId)
-        val customer = userRepository.findByIdAndDeletedFalse(customerId) ?: throw ResourceNotFoundException(customerId)
+        val address = addressRepository.findByIdAndDeletedFalse(createOrderRequest.addressId)
+            ?: throw ResourceNotFoundException(createOrderRequest.addressId)
 
-        val defaultAddress = addressRepository.findByUserIdAndDeletedFalse(customerId)
-        val newAddress = defaultAddress == null
-
-        val finalAddress = if (newAddress){
-            val address = Address(
-                user = customer,
-                addressLine = createOrderRequest.deliveryAddress.addressLine,
-                city = createOrderRequest.deliveryAddress.city,
-                longitude = createOrderRequest.deliveryAddress.longitude,
-                latitude = createOrderRequest.deliveryAddress.latitude
-            )
-            addressRepository.save(address)
-        } else {
-            defaultAddress
+        if (address.user?.id != user.id) {
+            throw ForbiddenException(address.user?.id)
         }
 
         val productIds = createOrderRequest.items.map { it.productId }
@@ -589,19 +817,22 @@ class OrderServiceImpl(
 
         val subtotal = calculateSubtotal(createOrderRequest.items, products)
         val serviceCharge = calculateServiceCharge(subtotal)
-        val deliveryFee = calculateDeliveryFee(createOrderRequest.deliveryAddress.toString())
-        val discount = calculateDiscount(subtotal, customerId)
-        val totalAmount = subtotal.add(serviceCharge).add(deliveryFee).subtract(discount)
+        val deliveryFee = calculateDeliveryFee(address.toString())
+        val totalAmount = subtotal.add(serviceCharge).add(deliveryFee).subtract(BigDecimal.TEN)
 
-        products.forEach{ product -> if(product.category.restaurant.id != restaurant.id) throw InvalidInputException(product.id) }
+        products.forEach { product ->
+            if (product.category.restaurant.id != restaurant.id) throw InvalidInputException(
+                product.id
+            )
+        }
 
         val order = Order(
-            customerId = customerId,
+            user = user,
             restaurant = restaurant,
             paymentOption = createOrderRequest.paymentOption,
             status = OrderStatus.PENDING,
-            address = finalAddress!!,
-            orderDate = LocalDateTime.now(),
+            address = address,
+            orderDate = LocalDate.now(),
             totalAmount = totalAmount
         )
 
@@ -620,17 +851,88 @@ class OrderServiceImpl(
         order.orderItems = orderItems.toMutableList()
         val savedOrder = orderRepository.save(order)
 
-        paymentService.processOrderPayment(customerId, savedOrder.id, PaymentRequest(savedOrder.totalAmount, savedOrder.paymentOption))
+        paymentService.processOrderPayment(
+            user.id!!,
+            savedOrder.id,
+            PaymentRequest(savedOrder.totalAmount, savedOrder.paymentOption)
+        )
+
+        return savedOrder.toDto()
+    }
+
+    @Transactional
+    override fun createOrder(userId: Long, createOrderRequest: CreateOrderRequest): OrderDTO {
+        val user = userRepository.findByIdAndDeletedFalse(userId)
+
+        val restaurant = restaurantRepository.findByIdAndDeletedFalse(createOrderRequest.restaurantId)
+            ?: throw ResourceNotFoundException(createOrderRequest.restaurantId)
+
+        val address = addressRepository.findByIdAndDeletedFalse(createOrderRequest.addressId)
+            ?: throw ResourceNotFoundException(createOrderRequest.addressId)
+
+        if (address.user?.id != user?.id) {
+            throw ForbiddenException(address.user?.id)
+        }
+
+        val productIds = createOrderRequest.items.map { it.productId }
+        val products = productRepository.findAllByIdAndDeletedFalse(productIds)
+
+        val foundIds = products.map { it.id }.toSet()
+        val missingIds = productIds.filterNot { foundIds.contains(it) }
+
+        if (missingIds.isNotEmpty()) throw ResourceNotFoundException(missingIds)
+
+        val subtotal = calculateSubtotal(createOrderRequest.items, products)
+        val serviceCharge = calculateServiceCharge(subtotal)
+        val deliveryFee = calculateDeliveryFee(address.toString())
+        val totalAmount = subtotal.add(serviceCharge).add(deliveryFee).subtract(BigDecimal.TEN)
+
+        products.forEach { product ->
+            if (product.category.restaurant.id != restaurant.id) throw InvalidInputException(
+                product.id
+            )
+        }
+
+        val order = Order(
+            user = user!!,
+            restaurant = restaurant,
+            paymentOption = createOrderRequest.paymentOption,
+            status = OrderStatus.PENDING,
+            address = address,
+            orderDate = LocalDate.now(),
+            totalAmount = totalAmount
+        )
+
+        createOrderRequest.items.forEach { item -> if (item.quantity <= 0) throw InvalidInputException(item.quantity) }
+
+        val orderItems = createOrderRequest.items.map { item ->
+            val product = products.first { it.id == item.productId }
+            OrderItem(
+                order = order,
+                product = product,
+                quantity = item.quantity,
+                price = product.price
+            )
+        }
+
+        order.orderItems = orderItems.toMutableList()
+        val savedOrder = orderRepository.save(order)
+
+        paymentService.processOrderPayment(
+            user.id!!,
+            savedOrder.id,
+            PaymentRequest(savedOrder.totalAmount, savedOrder.paymentOption)
+        )
 
         return savedOrder.toDto()
     }
 
     override fun getOrderById(orderId: Long): OrderDTO {
-        return orderRepository.findByIdAndDeletedFalse(orderId)?.toDto()?: throw ResourceNotFoundException(orderId)
+        return orderRepository.findByIdAndDeletedFalse(orderId)?.toDto() ?: throw ResourceNotFoundException(orderId)
     }
 
     override fun getCustomerOrders(customerId: Long, pageable: Pageable): Page<OrderDTO> {
-        return orderRepository.findByCustomerId(customerId, pageable).map { it.toDto() }
+        return orderRepository.findByUserIdAndDeletedFalse(customerId, pageable).map { it.toDto() }
     }
 
     override fun getRestaurantOrders(restaurantId: Long, pageable: Pageable): Page<OrderDTO> {
@@ -642,7 +944,7 @@ class OrderServiceImpl(
 
         validateStatusTransition(order.status, status)
 
-        if(order.status != OrderStatus.COMPLETED){
+        if (order.status != OrderStatus.COMPLETED) {
             order.status = status
             return orderRepository.save(order).toDto()
         }
@@ -657,7 +959,7 @@ class OrderServiceImpl(
             throw InvalidInputException(paymentRequest.amount)
         }
 
-        if(order.status != OrderStatus.PENDING){
+        if (order.status != OrderStatus.PENDING) {
             throw ValidationException(order.status)
         }
 
@@ -665,8 +967,8 @@ class OrderServiceImpl(
             throw ValidationException(paymentRequest.amount)
         }
 
-        val result = paymentService.processOrderPayment(order.customerId, orderId, paymentRequest)
-        if(result.code == 200){
+        val result = paymentService.processOrderPayment(order.user.id!!, orderId, paymentRequest)
+        if (result.code == 200) {
             order.status = OrderStatus.ACCEPTED
             orderRepository.save(order)
         }
@@ -686,7 +988,7 @@ class OrderServiceImpl(
         }
 
         if (order.paymentOption == PaymentOption.CARD) {
-            val defaultCard = cardRepository.findByUserIdAndIsDefaultTrueAndDeletedFalse(order.customerId)
+            val defaultCard = cardRepository.findByUserIdAndIsDefaultTrueAndDeletedFalse(order.user.id!!)
             defaultCard?.let {
                 it.balance = it.balance.add(order.totalAmount)
                 cardRepository.save(it)
@@ -694,19 +996,174 @@ class OrderServiceImpl(
         } else if (order.paymentOption == PaymentOption.CASH) throw InvalidInputException(order.paymentOption)
 
         val transaction = PaymentTransaction(
-            userId = order.customerId,
+            userId = order.user.id!!,
             amount = order.totalAmount,
             paymentOption = order.paymentOption,
             paymentStatus = PaymentStatus.SUCCESS,
             orderId = order.id,
             isRefund = true
         )
-         paymentRepository.save(transaction)
+        paymentRepository.save(transaction)
 
         order.status = OrderStatus.REFUNDED
         orderRepository.save(order)
 
         return BaseMessage(200, "Buyurtma muvaffaqiyatli qaytarildi. Tranzaksiya ID: ${transaction.transactionId}")
+    }
+
+    override fun searchOrders(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?,
+        pageable: Pageable
+    ): Page<OrderDTO> {
+        var spec: Specification<Order> = Specification.where(null)//dynamic searching uchun kerak boladi
+
+        if (startDate != null && endDate != null) {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.between(root.get("orderDate"), startDate, endDate)
+            }
+        } else if (startDate != null) {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.greaterThanOrEqualTo(root.get("orderDate"), startDate)
+            }
+        } else if (endDate != null) {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.lessThanOrEqualTo(root.get("orderDate"), endDate)
+            }
+        }
+
+        status?.let {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.equal(root.get<OrderStatus>("status"), it)
+            }
+        }
+
+        paymentType?.let {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.equal(root.get<PaymentOption>("paymentOption"), it)
+            }
+        }
+
+        orderId?.let {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.equal(root.get<Long>("id"), it)
+            }
+        }
+
+        customerId?.let {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.equal(root.get<User>("user").get<Long>("id"), it)
+            }
+        }
+
+        restaurantId?.let {
+            spec = spec.and { root, _, criteriaBuilder ->
+                criteriaBuilder.equal(root.get<Restaurant>("restaurant").get<Long>("id"), it)
+            }
+        }
+
+        spec = spec.and { root, _, criteriaBuilder ->
+            criteriaBuilder.equal(root.get<Boolean>("deleted"), false)
+        }
+
+        return orderRepository.findAll(spec, pageable).map { it.toDto() }
+    }
+
+    override fun downloadOrdersAsExcel(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?
+    ): ByteArray {
+        val pageable = PageRequest.of(0, Int.MAX_VALUE)
+        val orders = searchOrders(startDate, endDate, status, paymentType, orderId, customerId, restaurantId, pageable).content
+
+        val headers = listOf("Order ID", "Customer", "Restaurant", "Status", "Payment", "Total", "Date")
+        val valueExtractors: List<(OrderDTO) -> Any?> = listOf(
+            { it.id },
+            { it.userId},
+            { it.restaurantId },
+            { it.status },
+            { it.paymentOption },
+            { it.totalAmount },
+            { it.orderDate }
+        )
+
+        return downloadService.generateExcel(orders, headers, valueExtractors)
+    }
+
+    override fun downloadOrdersAsPdf(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?
+    ): ByteArray {
+        val pageable = PageRequest.of(0, Int.MAX_VALUE)
+        val orders = searchOrders(startDate, endDate, status, paymentType, orderId, customerId, restaurantId, pageable).content
+
+        val headers = listOf("Order ID", "Customer", "Restaurant", "Status", "Payment", "Total", "Date")
+        val valueExtractors: List<(OrderDTO) -> Any?> = listOf(
+            { it.id },
+            { it.userId},
+            { it.restaurantId },
+            { it.status },
+            { it.paymentOption },
+            { it.totalAmount },
+            { it.orderDate }
+        )
+
+        return downloadService.generatePdf(orders, headers, valueExtractors)
+    }
+
+    override fun downloadOrdersAsCsv(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?
+    ): ByteArray {
+        val pageable = PageRequest.of(0, Int.MAX_VALUE)
+        val orders = searchOrders(startDate, endDate, status, paymentType, orderId, customerId, restaurantId, pageable).content
+
+        val headers = listOf("Order ID", "Customer", "Restaurant", "Status", "Payment", "Total", "Date")
+        val valueExtractors: List<(OrderDTO) -> Any?> = listOf(
+            { it.id },
+            { it.userId},
+            { it.restaurantId },
+            { it.status },
+            { it.paymentOption },
+            { it.totalAmount },
+            { it.orderDate }
+        )
+
+        return downloadService.generateCsv(orders, headers, valueExtractors)
+    }
+
+    override fun downloadOrdersAsJson(
+        startDate: LocalDate?,
+        endDate: LocalDate?,
+        status: OrderStatus?,
+        paymentType: PaymentOption?,
+        orderId: Long?,
+        customerId: Long?,
+        restaurantId: Long?
+    ): ByteArray {
+        val pageable = PageRequest.of(0, Int.MAX_VALUE)
+        val orders = searchOrders(startDate, endDate, status, paymentType, orderId, customerId, restaurantId, pageable).content
+        return downloadService.generateJson(orders)
     }
 
     private fun calculateSubtotal(items: List<OrderItemRequest>, products: List<Product>): BigDecimal {
@@ -724,10 +1181,6 @@ class OrderServiceImpl(
         return if (deliveryAddress != null) BigDecimal("10000") else BigDecimal.ZERO
     }
 
-    private fun calculateDiscount(subtotal: BigDecimal, customerId: Long): BigDecimal {
-        return BigDecimal.ZERO
-    }
-
     private fun validateStatusTransition(currentStatus: OrderStatus, newStatus: OrderStatus) {
         val validTransitions = mapOf(
             OrderStatus.PENDING to setOf(OrderStatus.IN_PROGRESS, OrderStatus.REJECTED, OrderStatus.CANCELLED),
@@ -742,7 +1195,6 @@ class OrderServiceImpl(
             throw ValidationException("Cannot transition from $currentStatus to $newStatus")
         }
     }
-
 }
 
 @Service
@@ -751,7 +1203,7 @@ class PaymentServiceImpl(
     private val orderRepository: OrderRepository,
     private val cardRepository: CardRepository
 ) : PaymentService {
-    
+
     private val MAX_RETRIES = 3;
 
     override fun processOrderPayment(userId: Long, orderId: Long?, paymentRequest: PaymentRequest): BaseMessage {
@@ -770,7 +1222,7 @@ class PaymentServiceImpl(
         if (paymentRequest.amount <= BigDecimal.ZERO) throw InvalidInputException(MessageKey.NEGATIVE_PRICE)
 
         order?.let {
-            if (it.customerId != userId) {
+            if (it.user.id != userId) {
                 throw InvalidInputException()
             }
         }
@@ -918,5 +1370,492 @@ class CardServiceImpl(
 
     private fun maskCardNumber(number: String): String {
         return "*".repeat(12) + number.takeLast(4)
+    }
+}
+
+@Service
+class DownloadServiceImpl(
+    private val objectMapper: ObjectMapper
+) : DownloadService {
+
+    override fun <T> generateExcel(
+        data: List<T>,
+        headers: List<String>,
+        valueExtractors: List<(T) -> Any?>
+    ): ByteArray {
+        if (headers.size != valueExtractors.size) throw IllegalArgumentException()
+
+        val workbook = XSSFWorkbook()
+        val sheet = workbook.createSheet("Data")
+
+        val headerRow = sheet.createRow(0)
+        headers.forEachIndexed { index, header ->
+            headerRow.createCell(index).setCellValue(header)
+        }//bu row yaratib chiqebdi
+
+        data.forEachIndexed { rowIndex, item ->
+            val row = sheet.createRow(rowIndex + 1)
+            valueExtractors.forEachIndexed { colIndex, extractor ->
+                val cell = row.createCell(colIndex)
+                when (val value = extractor(item)) {
+                    null -> cell.cellType = CellType.BLANK
+                    is String -> cell.setCellValue(value)
+                    is Number -> cell.setCellValue(value.toDouble())
+                    is Boolean -> cell.setCellValue(value)
+                    is LocalDate -> cell.setCellValue(value.toString())
+                    is LocalDateTime -> cell.setCellValue(value.toString())
+                    else -> cell.setCellValue(value.toString())
+                }
+            }
+        }
+
+        for (i in headers.indices) {
+            sheet.autoSizeColumn(i)
+        }
+
+        val outputStream = ByteArrayOutputStream()
+        workbook.write(outputStream)
+        workbook.close()//har doim yopish kerak ekan
+
+        return outputStream.toByteArray()
+    }
+
+    override fun <T> generatePdf(
+        data: List<T>,
+        headers: List<String>,
+        valueExtractors: List<(T) -> Any?>
+    ): ByteArray {
+        if (headers.size != valueExtractors.size) throw IllegalArgumentException()
+
+        val document = Document(PageSize.A4.rotate())
+        val outputStream = ByteArrayOutputStream()
+        PdfWriter.getInstance(document, outputStream)
+
+        document.open()
+        val table = PdfPTable(headers.size)
+        table.widthPercentage = 100f
+
+        headers.forEach { header ->
+            val cell = PdfPCell(Phrase(header))
+            cell.horizontalAlignment = Element.ALIGN_CENTER
+            cell.backgroundColor = BaseColor.LIGHT_GRAY
+            table.addCell(cell)
+        }
+
+        data.forEach { item ->
+            valueExtractors.forEach { extractor ->
+                val value = extractor(item)?.toString() ?: ""
+                table.addCell(value)
+            }
+        }//data shu yerda extract bolebdi
+
+        document.add(table)
+        document.close()
+
+        return outputStream.toByteArray()
+    }
+
+    override fun <T> generateCsv(
+        data: List<T>,
+        headers: List<String>,
+        valueExtractors: List<(T) -> Any?>
+    ): ByteArray {
+        if (headers.size != valueExtractors.size) throw IllegalArgumentException()
+
+        val outputStream = ByteArrayOutputStream()
+        val writer = outputStream.writer(StandardCharsets.UTF_8)
+        val csvPrinter = CSVPrinter(writer, CSVFormat.DEFAULT.withHeader(*headers.toTypedArray()))
+
+        data.forEach { item ->
+            csvPrinter.printRecord(valueExtractors.map { extractor -> extractor(item)?.toString() ?: "" })
+        }
+
+        csvPrinter.flush()
+        csvPrinter.close()
+
+        return outputStream.toByteArray()
+    }
+
+    override fun <T> generateJson(data: List<T>): ByteArray {
+        return objectMapper.writeValueAsBytes(data)
+    }
+}
+
+@Service
+class DashboardServiceImpl(
+    private val orderItemRepository: OrderItemRepository,
+    private val orderRepository: OrderRepository
+): DashboardService {
+    override fun getTotalSalesForCurrMonth(): Double {
+        return orderRepository.findTotalSalesForCurrentMonth().toDouble()
+    }
+
+    override fun mostSoldProducts(): List<Product> {
+        return orderItemRepository.findMostSoldProducts()
+    }
+
+    override fun getSalesBetweenDates(startDate: LocalDate, endDate: LocalDate): Double {
+        return orderRepository.findSalesBetweenDates(startDate, endDate).toDouble()
+    }
+
+    override fun getTotalSalesForCurrDay(): Double? {
+        return orderRepository.findTotalSalesForCurrentDay()?.toDouble()?: throw ResourceNotFoundException()
+    }
+
+    override fun getAverageDailySales(startDate: LocalDate, endDate: LocalDate): Double {
+        val dailySales = orderRepository.findDailySales(startDate, endDate)
+        if (dailySales.isEmpty()) return 0.0
+
+        val totalAmount = dailySales.sumOf { (it[0] as BigDecimal).toDouble() }
+        return totalAmount / dailySales.size
+    }
+
+    override fun getLeastSoldProducts(): List<Product> {
+        return orderItemRepository.findLeastSoldProducts()
+    }
+
+    override fun getTopBuyers(limit: Int): List<Map<String, Any>> {
+        val pageable = PageRequest.of(0, limit)
+        val results = orderRepository.findTopBuyers(pageable)
+
+        return results.map { row ->
+            mapOf(
+                "user" to (row[0] as User).toDto(),
+                "orderCount" to (row[1] as Long),
+                "totalSpent" to (row[2] as BigDecimal)
+            )
+        }
+    }
+
+    override fun getLeastSellingProductsFor30Days(): List<LeastProductsResponse> {
+        return orderItemRepository.findLeastSoldProductsForLast30Days()
+    }
+}
+
+@Service
+@Transactional
+class CartServiceImpl(
+    private val cartRepository: CartRepository,
+    private val userRepository: UserRepository,
+    private val productRepository: ProductRepository
+) : CartService {
+
+    private val logger = LoggerFactory.getLogger(javaClass)
+
+    override fun getCart(chatId: Long): CartDTO {
+        try {
+            logger.debug("Getting cart for chatId: {}", chatId)
+
+            // Find user by Telegram chatId
+            val user = userRepository.findByTelegramChatId(chatId)
+                ?: throw ResourceNotFoundException("User not found for chatId: $chatId")
+
+            // Get or create cart with items eagerly fetched
+            val cart = cartRepository.findByUserIdAndDeletedFalse(user.id!!) ?: return CartDTO(emptyList())
+
+            // Use Hibernate.initialize to force initialization of the items collection
+            Hibernate.initialize(cart.items)
+
+            // Map to CartDTO
+            return CartDTO(
+                items = cart.items.map { item ->
+                    CartItemDTO(
+                        product = item.product.toDto(),
+                        quantity = item.quantity
+                    )
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("Error retrieving cart for chatId {}: {}", chatId, e.message, e)
+            throw RuntimeException("Failed to retrieve cart: ${e.message}")
+        }
+    }
+
+    override fun addItemToCart(chatId: Long, productId: Long, quantity: Int) {
+        val user = userRepository.findByTelegramChatId(chatId)
+            ?: throw ResourceNotFoundException("User not found for chat ID: $chatId")
+
+        var cart = cartRepository.findByUserIdAndDeletedFalse(user.id!!)
+        if (cart == null) {
+            cart = Cart(user = user)
+            cartRepository.save(cart)
+        }
+
+        val product = productRepository.findByIdAndDeletedFalse(productId)
+            ?: throw ResourceNotFoundException("Product not found: $productId")
+
+        // Check if item already exists in cart
+        val existingItem = cart.items.find { it.product.id == productId }
+        if (existingItem != null) {
+            existingItem.quantity += quantity
+        } else {
+            val cartItem = CartItem(
+                cart = cart,
+                product = product,
+                quantity = quantity
+            )
+            cart.items.add(cartItem)
+        }
+
+        cartRepository.save(cart)
+    }
+
+    override fun updateItemQuantity(chatId: Long, productId: Long, quantity: Int) {
+        if (quantity <= 0) {
+            removeItemFromCart(chatId, productId)
+            return
+        }
+
+        val user = userRepository.findByTelegramChatId(chatId)
+            ?: throw ResourceNotFoundException("User not found for chat ID: $chatId")
+
+        val cart = cartRepository.findByUserIdAndDeletedFalse(user.id!!)
+            ?: throw ResourceNotFoundException("Cart not found for user")
+
+        val cartItem = cart.items.find { it.product.id == productId }
+            ?: throw ResourceNotFoundException("Item not found in cart")
+
+        cartItem.quantity = quantity
+        cartRepository.save(cart)
+    }
+
+    override fun removeItemFromCart(chatId: Long, productId: Long) {
+        val user = userRepository.findByTelegramChatId(chatId)
+            ?: throw ResourceNotFoundException("User not found for chat ID: $chatId")
+
+        val cart = cartRepository.findByUserIdAndDeletedFalse(user.id!!)
+            ?: return
+
+        val itemToRemove = cart.items.find { it.product.id == productId } ?: return
+        cart.items.remove(itemToRemove)
+        cartRepository.save(cart)
+    }
+
+    override fun clearCart(chatId: Long) {
+        val user = userRepository.findByTelegramChatId(chatId)
+            ?: throw ResourceNotFoundException("User not found for chat ID: $chatId")
+
+        val cart = cartRepository.findByUserIdAndDeletedFalse(user.id!!) ?: return
+        cart.items.clear()
+        cartRepository.save(cart)
+    }
+}
+
+@Service
+class LocalizedMessageServiceImpl(
+    private val messageSource: MessageSource,
+    private val localeService: LocaleService
+) : LocalizedMessageService {
+
+    private val logger = LoggerFactory.getLogger(javaClass)
+
+    override fun getMessage(key: String, chatId: Long, vararg args: Any): String {
+        val userLocale = localeService.getUserLocale(chatId)
+        return getMessage(key, userLocale, *args)
+    }
+
+    override fun getMessage(key: String, locale: Locale, vararg args: Any): String {
+        return try {
+            messageSource.getMessage(key, args, locale)
+        } catch (e: NoSuchMessageException) {
+            logger.warn("Missing translation for key '{}' and locale '{}'. Using key as fallback.", key, locale)
+            key
+        } catch (e: Exception) {
+            logger.error("Error retrieving message for key '{}', locale '{}': {}", key, locale, e.message)
+            key
+        }
+    }
+}
+
+@Service
+class UserStateServiceImpl(
+    private val userStateRepository: UserStateRepository,
+    private val userRepository: UserRepository
+) : UserStateService {
+    private val objectMapper = ObjectMapper()
+    private val logger = LoggerFactory.getLogger(javaClass)
+
+    fun getUserState(chatId: Long): UserState {
+        val user = userRepository.findByTelegramChatId(chatId) ?: throw ResourceNotFoundException(chatId)
+
+        return userStateRepository.findByUserId(user.id!!) ?: run {
+            val newState = UserState(user = user)
+            userStateRepository.save(newState)
+        }
+    }
+
+    override fun getCurrentState(chatId: Long): BotState {
+        return try {
+            val user = userRepository.findByTelegramChatId(chatId)
+            if (user == null) {
+                logger.warn("No user found for chat $chatId, returning START state")
+                return BotState.START
+            }
+
+            val userState = userStateRepository.findByUserId(user.id!!)
+            userState?.currentState ?: BotState.START
+        } catch (e: Exception) {
+            logger.warn("Error getting state for chat $chatId: ${e.message}")
+            BotState.START
+        }
+    }
+
+    override fun setState(chatId: Long, state: BotState) {
+        try {
+            val user = userRepository.findByTelegramChatId(chatId)
+            if (user == null) {
+                logger.warn("Cannot set state for chat $chatId: User not found")
+                return
+            }
+
+            var userState = userStateRepository.findByUserId(user.id!!)
+            if (userState == null) {
+                userState = UserState(user = user)
+            }
+
+            userState.previousState = userState.currentState
+            userState.currentState = state
+            userStateRepository.save(userState)
+        } catch (e: Exception) {
+            logger.warn("Could not set state for chat $chatId: ${e.message}")
+        }
+    }
+
+    override fun setPreviousState(chatId: Long, state: BotState) {
+        try {
+            val userState = getUserState(chatId)
+            userState.previousState = state
+            userStateRepository.save(userState)
+        } catch (e: Exception) {
+            logger.warn("Could not set previous state for chat $chatId: ${e.message}")
+        }
+    }
+
+    override fun getPreviousState(chatId: Long): BotState {
+        return try {
+            getUserState(chatId).previousState ?: BotState.START
+        } catch (e: Exception) {
+            BotState.START
+        }
+    }
+
+    override fun getMenuState(chatId: Long): MenuStates {
+        return try {
+            getUserState(chatId).menuState
+        } catch (e: Exception) {
+            MenuStates.MAIN_MENU
+        }
+    }
+
+    override fun setMenuState(chatId: Long, menuState: MenuStates) {
+        try {
+            val userState = getUserState(chatId)
+            userState.menuState = menuState
+            userStateRepository.save(userState)
+        } catch (e: Exception) {
+            logger.warn("Could not set menu state for chat $chatId: ${e.message}")
+        }
+    }
+
+    override fun getTemporaryData(chatId: Long, key: String): String? {
+        try {
+            val userState = getUserState(chatId)
+            if (userState.temporaryData.isNullOrEmpty()) return null
+
+            val dataMap = objectMapper.readValue(userState.temporaryData, object : TypeReference<Map<String, String>>() {})
+            return dataMap[key]
+        } catch (e: Exception) {
+            logger.warn("Could not get temporary data for chat $chatId: ${e.message}")
+            return null
+        }
+    }
+
+    override fun setTemporaryData(chatId: Long, key: String, value: String) {
+        try {
+            val userState = getUserState(chatId)
+            val dataMap = if (userState.temporaryData.isNullOrEmpty()) {
+                mutableMapOf()
+            } else {
+                try {
+                    objectMapper.readValue(userState.temporaryData, object : TypeReference<MutableMap<String, String>>() {})
+                } catch (e: Exception) {
+                    mutableMapOf()
+                }
+            }
+
+            dataMap[key] = value
+            userState.temporaryData = objectMapper.writeValueAsString(dataMap)
+            userStateRepository.save(userState)
+        } catch (e: Exception) {
+            logger.warn("Could not set temporary data for chat $chatId: ${e.message}")
+        }
+    }
+
+    override fun clearTemporaryData(chatId: Long) {
+        try {
+            val userState = getUserState(chatId)
+            userState.temporaryData = null
+            userStateRepository.save(userState)
+        } catch (e: Exception) {
+            logger.warn("Could not clear temporary data for chat $chatId: ${e.message}")
+        }
+    }
+}
+
+@Service
+class LocaleServiceImpl(
+    private val userRepository: UserRepository,
+    private val userStateRepository: UserStateRepository
+) : LocaleService {
+    private val logger = LoggerFactory.getLogger(javaClass)
+
+    override fun getUserLocale(chatId: Long): Locale {
+        try {
+            val user = userRepository.findByTelegramChatId(chatId) ?: return Locale.forLanguageTag("uz")
+            val userState = userStateRepository.findByUserId(user.id!!)
+
+            val temporaryData = userState?.temporaryData
+            if (temporaryData != null) {
+                val objectMapper = ObjectMapper()
+                val dataMap = try {
+                    objectMapper.readValue(temporaryData, object : TypeReference<Map<String, String>>() {})
+                } catch (e: Exception) {
+                    null
+                }
+
+                val locale = dataMap?.get("locale")
+                if (locale != null) {
+                    return Locale.forLanguageTag(locale)
+                }
+            }
+
+            return Locale.forLanguageTag("uz")
+        } catch (e: Exception) {
+            return Locale.forLanguageTag("uz")
+        }
+    }
+
+    override fun setUserLocale(chatId: Long, languageCode: String) {
+        try {
+            val user = userRepository.findByTelegramChatId(chatId) ?: return
+            val userState = userStateRepository.findByUserId(user.id!!) ?: return
+
+            val objectMapper = ObjectMapper()
+            val dataMap = if (userState.temporaryData.isNullOrEmpty()) {
+                mutableMapOf()
+            } else {
+                try {
+                    objectMapper.readValue(userState.temporaryData, object : TypeReference<MutableMap<String, String>>() {})
+                } catch (e: Exception) {
+                    mutableMapOf()
+                }
+            }
+
+            dataMap["locale"] = languageCode
+            userState.temporaryData = objectMapper.writeValueAsString(dataMap)
+            userStateRepository.save(userState)
+        } catch (e: Exception) {
+            logger.error(e.message)
+        }
     }
 }

@@ -39,7 +39,8 @@ enum class UserStatus {
 
 enum class MessageKey {
     OTP_REQUEST,
-    NEGATIVE_PRICE
+    NEGATIVE_PRICE,
+    MAIN_MENU
 }
 
 enum class PaginationFieldName {
@@ -57,4 +58,25 @@ enum class CardType(val pattern: Regex) {
     UZCARD(Regex("^8600[0-9]{12}$")),
     VISA(Regex("^4[0-9]{12}(?:[0-9]{3})?$")),
     MASTERCARD(Regex("^5[1-5][0-9]{14}$"));
+}
+
+enum class BotState {
+    START,
+    AWAITING_LANGUAGE,
+    AWAITING_PHONE,
+    AWAITING_OTP,
+    AWAITING_ADDRESS,
+    AWAITING_ADDRESS_SELECTION,
+    REGISTERED,
+    PRODUCT_DETAIL_VIEW
+}
+
+enum class MenuStates {
+    MAIN_MENU,
+    CATEGORY_VIEW,
+    PRODUCT_VIEW,
+    CART_VIEW,
+    SETTINGS_VIEW,
+    ADDRESSES_VIEW,
+    PRODUCT_DETAIL_VIEW
 }

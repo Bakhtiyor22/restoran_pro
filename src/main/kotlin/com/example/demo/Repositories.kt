@@ -18,6 +18,9 @@ import org.springframework.data.jpa.repository.Query
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories
 import org.springframework.data.repository.query.Param
 import org.springframework.stereotype.Repository
+import java.math.BigDecimal
+import java.time.LocalDate
+import java.util.*
 
 @Configuration
 @EnableJpaRepositories(
@@ -55,7 +58,13 @@ class BaseRepositoryImpl<T : BaseEntity>(
 interface UserRepository : BaseRepository<User> {
     fun findByPhoneNumber(phoneNumber: String): User?
     fun findByRole(role: Roles): User?
+    fun findByTelegramChatId(chatId: Long): User?
+}
 
+@Repository
+interface UserStateRepository : BaseRepository<UserState> {
+    fun findByUserTelegramChatId(chatId: Long): UserState?
+    fun findByUserId(userId: Long): UserState?
 }
 
 @Repository
@@ -65,7 +74,8 @@ interface OtpRepository : BaseRepository<OtpEntity> {
 
 @Repository
 interface AddressRepository : BaseRepository<Address>{
-    fun findByUserIdAndDeletedFalse(customerId: Long): Address?
+    fun findByIdAndUserIdAndDeletedFalse(addressId: Long, userId: Long): Address?
+    fun findAllByUserIdAndDeletedFalse(userId: Long): List<Address>
 }
 
 @Repository
@@ -73,24 +83,70 @@ interface RestaurantRepository : BaseRepository<Restaurant>
 
 @Repository
 interface CategoryRepository : BaseRepository<Category> {
+    fun findByNameContainingIgnoreCase(name: String): Category?
     fun findByNameIgnoreCaseAndRestaurantIdAndDeletedFalse(name: String, id: Long): Set<Category>?
 }
 
 @Repository
 interface ProductRepository : BaseRepository<Product> {
+//    @Query("SELECT pr FROM Product pr WHERE LOWER(pr.name) LIKE LOWER(CONCAT('%', :name, '%'))")
+//    fun findByName(@Param("name") name: String?): List<Product>
+    fun findByCategoryIdAndDeletedFalse(id: Long): List<Product>
+
+    override fun findByIdAndDeletedFalse(id: Long): Product?
+
     fun findByNameIgnoreCaseAndCategoryIdAndDeletedFalse(name: String, id: Long): Product?
+
     @Query("SELECT p FROM Product p WHERE p.id IN :ids AND p.deleted = false")
     fun findAllByIdAndDeletedFalse(@Param("ids") ids: List<Long>): List<Product>
+
+    @Query("SELECT p FROM Product p WHERE p.deleted = false ORDER BY p.createdDate DESC")
+    fun findAllSortByCreatedDateDesc(pageable: Pageable): Page<Product>
 }
 
 interface OrderRepository : BaseRepository<Order> {
-    fun findByCustomerId(customerId: Long, pageable: Pageable): Page<Order>
+    fun findByUserIdAndDeletedFalse(customerId: Long, pageable: Pageable): Page<Order>
     fun findByRestaurantId(restaurantId: Long, pageable: Pageable): Page<Order>
-    fun findByRestaurantIdAndStatus(restaurantId: Long, status: OrderStatus, pageable: Pageable): Page<Order>
+
+    @Query("SELECT SUM(o.totalAmount) FROM Order o WHERE o.status = 'COMPLETED' and YEAR(o.orderDate) = YEAR(CURRENT_DATE) AND MONTH(o.orderDate) = MONTH(CURRENT_DATE) ")
+    fun findTotalSalesForCurrentMonth(): BigDecimal
+
+    @Query("SELECT SUM(o.totalAmount) FROM Order o WHERE o.status = 'COMPLETED' and o.orderDate = CURRENT_DATE")
+    fun findTotalSalesForCurrentDay(): BigDecimal?
+
+    @Query("SELECT SUM(o.totalAmount) FROM Order o WHERE o.status = 'COMPLETED' and o.orderDate BETWEEN :startDate AND :endDate")
+    fun findSalesBetweenDates(@Param("startDate") startDate: LocalDate, @Param("endDate") endDate: LocalDate): BigDecimal
+
+    @Query("SELECT SUM(o.totalAmount) as total, o.orderDate as date FROM Order o WHERE o.status = 'COMPLETED' and o.orderDate BETWEEN :startDate AND :endDate GROUP BY o.orderDate")
+    fun findDailySales(@Param("startDate") startDate: LocalDate, @Param("endDate") endDate: LocalDate): List<Array<Any>>
+
+    @Query("SELECT o.user, COUNT(o) as orderCount, SUM(o.totalAmount) as totalSpent FROM Order o GROUP BY o.user ORDER BY totalSpent DESC")
+    fun findTopBuyers(pageable: Pageable): List<Array<Any>>
 }
 
 interface OrderItemRepository : BaseRepository<OrderItem> {
-    fun findByOrderId(orderId: Long): List<OrderItem>
+    @Query("SELECT oi.product FROM OrderItem oi GROUP BY oi.product ORDER BY SUM(oi.quantity) DESC")
+    fun findMostSoldProducts(): List<Product>
+
+    @Query("SELECT oi.product FROM OrderItem oi GROUP BY oi.product ORDER BY SUM(oi.quantity) ASC")
+    fun findLeastSoldProducts(): List<Product>
+
+    @Query(value = """
+                        SELECT p.name, p.id, max(o.created_date) as lastOrderedDate, COALESCE(SUM(ot.quantity), 0) as total_sold
+                From products p
+                         left join order_item ot On p.id = ot.product_id
+                         left join orders o ON ot.order_id = o.id
+                where o.created_date > current_timestamp - interval '30 day' OR o.created_date IS NULL
+                GROUP BY p.name, p.id
+                ORDER BY total_sold, lastOrderedDate DESC
+                LIMIT 10;
+    """, nativeQuery = true)
+    fun findLeastSoldProductsForLast30Days(): List<LeastProductsResponse>
+}
+
+@Repository
+interface OrderDataRepository : BaseRepository<OrderData> {
+    fun findByUserIdAndDeletedFalse(userId: Long): OrderData?
 }
 
 @Repository
@@ -107,8 +163,7 @@ interface CardRepository : BaseRepository<Card> {
 }
 
 @Repository
-interface DiscountRepository : BaseRepository<Discount> {
-    fun findByProductIdAndDeletedFalse(productId: Long): List<Discount>
-    fun findByCategoryIdAndDeletedFalse(categoryId: Long): List<Discount>
-    fun findByIsActiveAndDeletedFalse(isActive: Boolean): List<Discount>
+interface CartRepository : BaseRepository<Cart> {
+    fun findByUserIdAndDeletedFalse(id: Long): Cart?
 }
+

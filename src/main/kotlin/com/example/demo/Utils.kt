@@ -6,15 +6,22 @@ import io.jsonwebtoken.SignatureAlgorithm
 import io.jsonwebtoken.security.Keys
 import org.springframework.context.i18n.LocaleContextHolder
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
+import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.stereotype.Component
 import java.util.*
 import javax.crypto.SecretKey
 
 fun validatePhoneNumber(phoneNumber: String): Boolean {
+    val normalizedNumber = if (phoneNumber.startsWith("+")) {
+        phoneNumber
+    } else {
+        "+$phoneNumber"
+    }
+
     return try {
-        phoneNumber.matches(Regex("^\\+998[0-9]{9}$"))
-    } catch (e: InvalidInputException) {
+        normalizedNumber.matches(Regex("^\\+998[0-9]{9}$"))
+    } catch (e: Exception) {
         false
     }
 }
@@ -103,4 +110,11 @@ class CardValidator {
             }.sum()
         return sum % 10 == 0
     }
+}
+
+fun getCurrentUser(userRepository: UserRepository): User {
+    val authentication = SecurityContextHolder.getContext().authentication
+    val username = authentication.name
+    return userRepository.findByPhoneNumber(username)
+        ?: throw ResourceNotFoundException(username)
 }

@@ -39,3 +39,7 @@ management:
   health:
     redis:
       enabled: false
+telegram:
+  bot:
+    name: ${Bot_Name}
+    token: ${Bot_Token}

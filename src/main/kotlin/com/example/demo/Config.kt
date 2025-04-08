@@ -5,7 +5,6 @@ import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.boot.CommandLineRunner
-import org.springframework.context.MessageSource
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.support.ResourceBundleMessageSource
@@ -35,9 +34,14 @@ import io.swagger.v3.oas.models.security.SecurityRequirement
 import io.swagger.v3.oas.models.security.SecurityScheme
 import io.swagger.v3.oas.models.parameters.Parameter
 import org.springframework.context.i18n.LocaleContextHolder
+import org.springframework.core.MethodParameter
 import org.springframework.data.redis.connection.RedisConnectionFactory
 import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.data.redis.serializer.StringRedisSerializer
+import org.springframework.web.bind.support.WebDataBinderFactory
+import org.springframework.web.context.request.NativeWebRequest
+import org.springframework.web.method.support.HandlerMethodArgumentResolver
+import org.springframework.web.method.support.ModelAndViewContainer
 import java.util.*
 
 
@@ -85,7 +89,14 @@ class AuditingConfig {
 
 class AuditorAwareImpl : AuditorAware<String> {
     override fun getCurrentAuditor(): Optional<String> {
-        return Optional.of("system")
+        val authentication = SecurityContextHolder.getContext().authentication
+
+        return if (authentication != null && authentication.isAuthenticated &&
+            authentication.principal != "anonymousUser") {
+            Optional.of(authentication.name)
+        } else {
+            Optional.of("system")
+        }
     }
 }
 
@@ -143,7 +154,6 @@ class JwtAuthFilter(
     private val userService: CustomUserDetailsService
 ) : OncePerRequestFilter() {
 
-
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,
@@ -157,11 +167,6 @@ class JwtAuthFilter(
                 val userDetails = userService.loadUserByUsername(username)
                 val authToken = jwtUtils.getAuthentication(token, userDetails)
 
-                val locale = jwtUtils.extractLocale(token)
-                val localeObj = Locale.forLanguageTag(locale)
-                LocaleContextHolder.setLocale(localeObj)
-                logger.debug("Set user locale to: ${localeObj.language} for request ${request.requestURI}")
-
                 SecurityContextHolder.getContext().authentication = authToken
                 filterChain.doFilter(request, response)
                 return
@@ -171,16 +176,15 @@ class JwtAuthFilter(
     }
 }
 
-
 @Configuration
 class AppConfig : WebMvcConfigurer {
 
     @Bean(name = ["messageSource"])
     fun messageSource(): ResourceBundleMessageSource {
         val source = ResourceBundleMessageSource()
-        source.setBasenames("error")
+        source.setBasenames("message", "error") // Look for both files
         source.setDefaultEncoding("UTF-8")
-        source.setUseCodeAsDefaultMessage(false)
+        source.setUseCodeAsDefaultMessage(true)
         source.setFallbackToSystemLocale(false)
         return source
     }
