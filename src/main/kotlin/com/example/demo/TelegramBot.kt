@@ -48,7 +48,7 @@ class TelegramBot(
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    private val HELP_TEXT_KEY = "help.text"
+    private val HELP_TEXT_KEY = MessageKey.HELP_TEXT
 
     private val listOfCommands: List<BotCommand> = listOf(
         BotCommand("/start", "Start interaction"),
@@ -100,7 +100,7 @@ class TelegramBot(
 
                     if (message.isReply && currentState == BotState.AWAITING_OTP) {
                         val originalMessage = message.replyToMessage
-                        val expectedPrompt = localizedMessageService.getMessage("otp.prompt", chatId)
+                        val expectedPrompt = localizedMessageService.getMessage(MessageKey.OTP_PROMPT, chatId)
 
                         if (originalMessage?.text == expectedPrompt) {
                             handleOtpReply(chatId, message.text)
@@ -122,7 +122,7 @@ class TelegramBot(
                             val contact = message.contact
 
                             if (contact.userId != message.from.id) {
-                                sendLocalizedMessage(chatId, "error.invalid_contact")
+                                sendLocalizedMessage(MessageKey.ERROR_INVALID_CONTACT, chatId)
                                 register(chatId, message.from.firstName)
                                 return
                             }
@@ -144,7 +144,7 @@ class TelegramBot(
         } catch (e: Exception) {
             val chatId = update.message?.chatId ?: update.callbackQuery?.message?.chatId
             if (chatId != null) {
-                sendMessage(chatId, localizedMessageService.getMessage("error.generic", chatId))
+                sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
             }
         }
     }
@@ -182,7 +182,7 @@ class TelegramBot(
                         val langCode = parts[1]
                         localeService.setUserLocale(chatId, langCode)
 
-                        val confirmationText = localizedMessageService.getMessage("language.selected", chatId)
+                        val confirmationText = localizedMessageService.getMessage(MessageKey.LANGUAGE_SELECTED, chatId)
                         execute(EditMessageText().apply {
                             setChatId(chatId.toString())
                             setMessageId(messageId)
@@ -203,20 +203,205 @@ class TelegramBot(
                     "back_to_products" -> showCategoriesMenu(chatId)
                     "confirm_order" -> handleOrderConfirmation(callbackQuery)
                     "cancel_order" -> {
-                        sendMessage(chatId, localizedMessageService.getMessage("order.cancelled", chatId))
+                        sendLocalizedMessage(MessageKey.ORDER_CANCELLED, chatId)
                         showMainMenu(chatId)
                     }
                     "add_address" -> {
                         enterAddress(chatId)
                     }
                     else -> {
-                        sendLocalizedMessage(chatId, "unknown.command", data)
+                        sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, data)
                     }
                 }
             }
         } catch (e: Exception) {
             logger.error("Error handling callback query: ${e.message}", e)
-            sendMessage(chatId, localizedMessageService.getMessage("error.generic", chatId))
+            sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+        }
+    }
+
+    private fun handleAddressSelection(callbackQuery: CallbackQuery) {
+        val chatId = callbackQuery.message?.chatId ?: return
+        val data = callbackQuery.data
+
+        if (data.startsWith("select_address:")) {
+            val addressId = data.substringAfter("select_address:").toLong()
+            orderManager.setAddressId(chatId, addressId)
+            sendLocalizedMessage(MessageKey.ADDRESS_SELECTED, chatId)
+            setState(chatId, BotState.REGISTERED)
+            showMainMenu(chatId)
+        } else if (data == "add_address") {
+            setState(chatId, BotState.AWAITING_ADDRESS)
+            enterAddress(chatId)
+        }
+    }
+
+    private fun handleAddressRequest(chatId: Long) {
+        val userDetails = userStateService.getUserState(chatId)
+
+        val existingAddresses = try {
+            addressService.getUserAddresses(userDetails.id!!)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        if (existingAddresses.isNotEmpty()) {
+            val markup = InlineKeyboardMarkup()
+            val rows = existingAddresses.map { address ->
+                listOf(InlineKeyboardButton().apply {
+                    text = "${address.addressLine}, ${address.city}"
+                    callbackData = "select_address:${address.id}"
+                })
+            }.toMutableList()
+
+            rows.add(listOf(InlineKeyboardButton().apply {
+                text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_NEW_ADDRESS, chatId)
+                callbackData = "add_address"
+            }))
+
+            markup.keyboard = rows
+            sendMessage(chatId, SendMessage().apply {
+                text = localizedMessageService.getMessage(MessageKey.ADDRESS_SELECT_OR_ADD, chatId)
+                replyMarkup = markup
+            })
+        } else {
+            setState(chatId, BotState.AWAITING_ADDRESS)
+            sendMessage(chatId, localizedMessageService.getMessage(MessageKey.BUTTON_ADD_NEW_ADDRESS, chatId))
+        }
+    }
+
+    private fun handleTextMessage(chatId: Long, text: String, currentState: BotState) {
+        when (text) {
+            "/start" -> {
+                handleStartCommand(chatId)
+                return
+            }
+
+            "/help" -> {
+                sendLocalizedMessage(HELP_TEXT_KEY, chatId)
+                return
+            }
+
+            "/settings" -> {
+                if (currentState == BotState.REGISTERED) {
+                    showSettingsMenu(chatId)
+                } else {
+                    sendLocalizedMessage(
+                        MessageKey.ERROR_COMMAND_UNAVAILABLE,
+                        chatId,
+                        text
+                    )
+                }
+                return
+            }
+
+            "/menu" -> {
+                if (currentState == BotState.REGISTERED) {
+                    showMainMenu(chatId)
+                } else {
+                    sendLocalizedMessage(MessageKey.ERROR_COMMAND_UNAVAILABLE, chatId, text)
+                }
+                return
+            }
+
+            "/deletedata" -> {
+                if (currentState == BotState.REGISTERED) {
+                    promptForDataDeletion(chatId)
+                } else {
+                    sendLocalizedMessage(MessageKey.ERROR_COMMAND_UNAVAILABLE, chatId, text)
+                }
+                return
+            }
+        }
+
+        if (currentState == BotState.REGISTERED || currentState.name.startsWith("MENU_")) {
+            localeService.getUserLocale(chatId)
+            val menuButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_MENU, chatId)
+            val cartButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_CART, chatId)
+            val addressesButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_MY_ADDRESSES, chatId)
+            val settingsButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_SETTINGS, chatId)
+            val returnButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
+
+            when (text) {
+                menuButtonText -> {
+                    showCategoriesMenu(chatId)
+                }
+
+                cartButtonText -> {
+                    showCart(chatId)
+                }
+
+                addressesButtonText -> {
+                    showAddresses(chatId)
+                }
+
+                settingsButtonText -> {
+                    showSettingsMenu(chatId)
+                }
+
+                returnButtonText -> {
+                    handleReturnAction(chatId)
+                }
+
+                else -> {
+                    val currentMenuState = getCurrentMenuState(chatId)
+
+                    if (currentMenuState == MenuStates.CATEGORY_VIEW) {
+                        val categoryId = findCategoryIdByName(chatId, text)
+                        if (categoryId != null) {
+                            showProductMenu(chatId, categoryId)
+                        } else {
+                            sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
+                        }
+                    } else if (currentMenuState == MenuStates.PRODUCT_VIEW) {
+                        val productId = findProductIdByName(chatId, text)
+                        if (productId != null) {
+                            showProductDetailsOrAddToCart(chatId, productId)
+                        } else {
+                            sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
+                        }
+                    } else {
+                        sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
+                    }
+                }
+            }
+        } else {
+            when (currentState) {
+                BotState.AWAITING_LANGUAGE -> sendLocalizedMessage(MessageKey.ERROR_SELECT_LANGUAGE_FIRST, chatId)
+                BotState.AWAITING_PHONE -> sendLocalizedMessage(MessageKey.ERROR_SHARE_CONTACT_FIRST, chatId)
+                BotState.AWAITING_OTP -> sendLocalizedMessage(MessageKey.ERROR_ENTER_OTP_FIRST, chatId)
+                BotState.AWAITING_ADDRESS -> sendLocalizedMessage(MessageKey.ERROR_SHARE_LOCATION_FIRST, chatId)
+                BotState.PRODUCT_DETAIL_VIEW -> sendLocalizedMessage(MessageKey.ERROR_SELECT_PRODUCT_FIRST, chatId)
+                else -> sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
+            }
+        }
+    }
+
+    private fun handleStartCommand(chatId: Long) {
+        try {
+            val existingUser = userRepository.findByTelegramChatId(chatId)
+
+            if (existingUser != null && existingUser.phoneNumber.isNotBlank()) {
+                val userState = userStateRepository.findByUserId(existingUser.id!!)
+                val phoneVerified = userState?.temporaryData?.let {
+                    val dataMap = ObjectMapper().readValue(it, object : TypeReference<Map<String, String>>() {})
+                    dataMap["phone_verified"] == "true"
+                } ?: false
+
+                if (phoneVerified) {
+                    setState(chatId, BotState.REGISTERED)
+                    sendLocalizedMessage(MessageKey.WELCOME_MESSAGE, chatId, existingUser.username)
+                    showMainMenu(chatId)
+                    return
+                }
+            }
+
+            setState(chatId, BotState.START)
+            promptForLanguageSelection(chatId)
+        } catch (e: Exception) {
+            logger.error("Error in handleStartCommand: ${e.message}", e)
+            setState(chatId, BotState.START)
+            promptForLanguageSelection(chatId)
         }
     }
 
@@ -225,12 +410,12 @@ class TelegramBot(
 
         if (existingUser != null && existingUser.phoneNumber.isNotBlank()) {
             setState(chatId, BotState.REGISTERED)
-            sendLocalizedMessage(chatId, "welcome.back", existingUser.username)
+            sendLocalizedMessage(MessageKey.WELCOME_MESSAGE, chatId, existingUser.username)
             showMainMenu(chatId)
             return
         }
 
-        val welcomeText = localizedMessageService.getMessage("welcome.message", chatId, "Customer")
+        val welcomeText = localizedMessageService.getMessage(MessageKey.WELCOME_MESSAGE, chatId, "Customer")
         sendMessage(chatId, welcomeText)
         register(chatId)
     }
@@ -264,7 +449,7 @@ class TelegramBot(
         val message = SendMessage()
         message.chatId = chatId.toString()
         message.text = localizedMessageService.getMessage(
-            "register.prompt_phone",
+            MessageKey.REGISTER_PROMPT_PHONE,
             chatId
         )
 
@@ -274,7 +459,7 @@ class TelegramBot(
                     add(
                         KeyboardButton(
                             localizedMessageService.getMessage(
-                                "button.register.share_phone",
+                                MessageKey.BUTTON_REGISTER_SHARE_PHONE,
                                 chatId
                             )
                         ).apply {
@@ -294,195 +479,11 @@ class TelegramBot(
             logger.error("Error sending phone request message to chat $chatId: ${e.message}", e)
         }
     }
-    private fun handleAddressSelection(callbackQuery: CallbackQuery) {
-        val chatId = callbackQuery.message?.chatId ?: return
-        val data = callbackQuery.data
-
-        if (data.startsWith("select_address:")) {
-            val addressId = data.substringAfter("select_address:").toLong()
-            orderManager.setAddressId(chatId, addressId)
-            sendLocalizedMessage(chatId, "address.selected")
-            setState(chatId, BotState.REGISTERED)
-            showMainMenu(chatId)
-        } else if (data == "add_address") {
-            setState(chatId, BotState.AWAITING_ADDRESS)
-            enterAddress(chatId)
-        }
-    }
-
-    private fun handleAddressRequest(chatId: Long) {
-        val userDetails = userStateService.getUserState(chatId)
-
-        val existingAddresses = try {
-            addressService.getUserAddresses(userDetails.id!!)
-        } catch (e: Exception) {
-            emptyList()
-        }
-
-        if (existingAddresses.isNotEmpty()) {
-            val markup = InlineKeyboardMarkup()
-            val rows = existingAddresses.map { address ->
-                listOf(InlineKeyboardButton().apply {
-                    text = "${address.addressLine}, ${address.city}"
-                    callbackData = "select_address:${address.id}"
-                })
-            }.toMutableList()
-
-            rows.add(listOf(InlineKeyboardButton().apply {
-                text = localizedMessageService.getMessage("button.add_new_address", chatId)
-                callbackData = "add_address"
-            }))
-
-            markup.keyboard = rows
-            sendMessage(chatId, SendMessage().apply {
-                text = localizedMessageService.getMessage("address.select_or_add", chatId)
-                replyMarkup = markup
-            })
-        } else {
-            setState(chatId, BotState.AWAITING_ADDRESS)
-            sendMessage(chatId, localizedMessageService.getMessage("button.add_new_address", chatId))
-        }
-    }
-
-    private fun handleTextMessage(chatId: Long, text: String, currentState: BotState) {
-        when (text) {
-            "/start" -> {
-                handleStartCommand(chatId)
-                return
-            }
-
-            "/help" -> {
-                sendLocalizedMessage(chatId, HELP_TEXT_KEY)
-                return
-            }
-
-            "/settings" -> {
-                if (currentState == BotState.REGISTERED) {
-                    showSettingsMenu(chatId)
-                } else {
-                    sendLocalizedMessage(
-                        chatId,
-                        "error.command.unavailable",
-                        text
-                    )
-                }
-                return
-            }
-
-            "/menu" -> {
-                if (currentState == BotState.REGISTERED) {
-                    showMainMenu(chatId)
-                } else {
-                    sendLocalizedMessage(chatId, "error.command.unavailable", text)
-                }
-                return
-            }
-
-            "/deletedata" -> {
-                if (currentState == BotState.REGISTERED) {
-                    promptForDataDeletion(chatId)
-                } else {
-                    sendLocalizedMessage(chatId, "error.command.unavailable", text)
-                }
-                return
-            }
-        }
-
-        if (currentState == BotState.REGISTERED || currentState.name.startsWith("MENU_")) {
-            localeService.getUserLocale(chatId)
-            val menuButtonText = localizedMessageService.getMessage("button.menu", chatId)
-            val cartButtonText = localizedMessageService.getMessage("button.cart", chatId)
-            val addressesButtonText = localizedMessageService.getMessage("button.my_addresses", chatId)
-            val settingsButtonText = localizedMessageService.getMessage("button.settings", chatId)
-            val returnButtonText = localizedMessageService.getMessage("button.return", chatId)
-
-            when (text) {
-                menuButtonText -> {
-                    showCategoriesMenu(chatId)
-                }
-
-                cartButtonText -> {
-                    showCart(chatId)
-                }
-
-                addressesButtonText -> {
-                    showAddresses(chatId)
-                }
-
-                settingsButtonText -> {
-                    showSettingsMenu(chatId)
-                }
-
-                returnButtonText -> {
-                    handleReturnAction(chatId)
-                }
-
-                else -> {
-                    val currentMenuState = getCurrentMenuState(chatId)
-
-                    if (currentMenuState == MenuStates.CATEGORY_VIEW) {
-                        val categoryId = findCategoryIdByName(chatId, text)
-                        if (categoryId != null) {
-                            showProductMenu(chatId, categoryId)
-                        } else {
-                            sendLocalizedMessage(chatId, "unknown.command", text)
-                        }
-                    } else if (currentMenuState == MenuStates.PRODUCT_VIEW) {
-                        val productId = findProductIdByName(chatId, text)
-                        if (productId != null) {
-                            showProductDetailsOrAddToCart(chatId, productId)
-                        } else {
-                            sendLocalizedMessage(chatId, "unknown.command", text)
-                        }
-                    } else {
-                        sendLocalizedMessage(chatId, "unknown.command", text)
-                    }
-                }
-            }
-        } else {
-            when (currentState) {
-                BotState.AWAITING_LANGUAGE -> sendLocalizedMessage(chatId, "error.select_language_first")
-                BotState.AWAITING_PHONE -> sendLocalizedMessage(chatId, "error.share_contact_first")
-                BotState.AWAITING_OTP -> sendLocalizedMessage(chatId, "error.enter_otp_first")
-                BotState.AWAITING_ADDRESS -> sendLocalizedMessage(chatId, "error.share_location_first")
-                BotState.PRODUCT_DETAIL_VIEW -> sendLocalizedMessage(chatId, "error.select_product_first")
-                else -> sendLocalizedMessage(chatId, "unknown.command", text)
-            }
-        }
-    }
-
-    private fun handleStartCommand(chatId: Long) {
-        try {
-            val existingUser = userRepository.findByTelegramChatId(chatId)
-
-            if (existingUser != null && existingUser.phoneNumber.isNotBlank()) {
-                val userState = userStateRepository.findByUserId(existingUser.id!!)
-                val phoneVerified = userState?.temporaryData?.let {
-                    val dataMap = ObjectMapper().readValue(it, object : TypeReference<Map<String, String>>() {})
-                    dataMap["phone_verified"] == "true"
-                } ?: false
-
-                if (phoneVerified) {
-                    setState(chatId, BotState.REGISTERED)
-                    sendLocalizedMessage(chatId, "welcome.back", existingUser.username)
-                    showMainMenu(chatId)
-                    return
-                }
-            }
-
-            setState(chatId, BotState.START)
-            promptForLanguageSelection(chatId)
-        } catch (e: Exception) {
-            logger.error("Error in handleStartCommand: ${e.message}", e)
-            setState(chatId, BotState.START)
-            promptForLanguageSelection(chatId)
-        }
-    }
 
     private fun promptForLanguageSelection(chatId: Long) {
         val message = SendMessage()
         message.chatId = chatId.toString()
-        val promptText = localizedMessageService.getMessage("language.select", Locale.forLanguageTag("uz"))
+        val promptText = localizedMessageService.getMessage(MessageKey.LANGUAGE_SELECT, Locale.forLanguageTag("uz"))
 
         message.text = promptText
 
@@ -507,7 +508,7 @@ class TelegramBot(
     private fun sendOtp(chatId: Long, phoneNumber: String) {
         try {
             if (!validatePhoneNumber(phoneNumber)) {
-                sendLocalizedMessage(chatId, "error.invalid_phone_number")
+                sendLocalizedMessage(MessageKey.ERROR_INVALID_CONTACT, chatId)
                 register(chatId)
                 return
             }
@@ -518,7 +519,7 @@ class TelegramBot(
 
             val message = SendMessage()
             message.chatId = chatId.toString()
-            message.text = localizedMessageService.getMessage("otp.prompt", chatId)
+            message.text = localizedMessageService.getMessage(MessageKey.OTP_PROMPT, chatId)
             message.replyMarkup = ForceReplyKeyboard().apply {
                 forceReply = true
                 selective = true
@@ -528,7 +529,7 @@ class TelegramBot(
             setState(chatId, BotState.AWAITING_OTP)
         } catch (e: Exception) {
             logger.error("Error requesting OTP: ${e.message}", e)
-            sendLocalizedMessage(chatId, "error.otp.request_failed")
+            sendLocalizedMessage(MessageKey.ERROR_OTP_REQUEST_FAILED, chatId)
             register(chatId)
         }
     }
@@ -536,7 +537,7 @@ class TelegramBot(
     private fun handleOtpReply(chatId: Long, otp: String) {
         val phoneNumber = userStateService.getTemporaryData(chatId, "phone_number")
         if (phoneNumber == null) {
-            sendLocalizedMessage(chatId, "error.generic")
+            sendLocalizedMessage(MessageKey.ERROR_GENERIC, chatId)
             setState(chatId, BotState.START)
             handleStartCommand(chatId)
             return
@@ -544,7 +545,7 @@ class TelegramBot(
 
         val otpIdString = userStateService.getTemporaryData(chatId, "otp_id")
         if (otpIdString == null) {
-            sendLocalizedMessage(chatId, "error.otp.expired_or_missing")
+            sendLocalizedMessage(MessageKey.ERROR_OTP_EXPIRED_OR_MISSING, chatId)
             setState(chatId, BotState.START)
             handleStartCommand(chatId)
             return
@@ -552,7 +553,7 @@ class TelegramBot(
 
         val otpId = otpIdString.toLongOrNull()
         if (otpId == null) {
-            sendLocalizedMessage(chatId, "error.generic")
+            sendLocalizedMessage(MessageKey.ERROR_GENERIC, chatId)
             setState(chatId, BotState.START)
             handleStartCommand(chatId)
             return
@@ -573,7 +574,7 @@ class TelegramBot(
             enterAddress(chatId)
         } catch (e: Exception) {
             logger.error("OTP validation failed: ${e.message}", e)
-            sendLocalizedMessage(chatId, "error.otp.invalid")
+            sendLocalizedMessage(MessageKey.ERROR_OTP_INVALID, chatId)
             register(chatId)
         }
     }
@@ -581,13 +582,13 @@ class TelegramBot(
     private fun enterAddress(chatId: Long) {
         val message = SendMessage()
         message.chatId = chatId.toString()
-        message.text =
-            localizedMessageService.getMessage("address.prompt", chatId)
+        message.text = 
+            localizedMessageService.getMessage(MessageKey.ADDRESS_PROMPT, chatId)
 
         val markup = ReplyKeyboardMarkup().apply {
             keyboard = listOf(
                 KeyboardRow().apply {
-                    add(KeyboardButton(localizedMessageService.getMessage("button.share_location", chatId)).apply {
+                    add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_SHARE_LOCATION, chatId)).apply {
                         requestLocation = true
                     })
                 }
@@ -608,7 +609,7 @@ class TelegramBot(
     private fun saveUserAddress(chatId: Long, latitude: Double, longitude: Double) {
         val user = userRepository.findByTelegramChatId(chatId)
         if (user == null) {
-            sendLocalizedMessage(chatId, "error.auth.required")
+            sendLocalizedMessage(MessageKey.ERROR_AUTH_REQUIRED, chatId)
             setState(chatId, BotState.START)
             handleStartCommand(chatId)
             return
@@ -632,12 +633,12 @@ class TelegramBot(
 
             addressRepository.save(address)
 
-            sendLocalizedMessage(chatId, "address.saved")
+            sendLocalizedMessage(MessageKey.ADDRESS_SAVED, chatId)
             setState(chatId, BotState.REGISTERED)
             showMainMenu(chatId)
         } catch (e: Exception) {
             logger.error("Failed to save address: ${e.message}", e)
-            sendLocalizedMessage(chatId, "error.address.save_failed")
+            sendLocalizedMessage(MessageKey.ERROR_ADDRESS_SAVE_FAILED, chatId)
             enterAddress(chatId)
         }
     }
@@ -647,17 +648,17 @@ class TelegramBot(
 
         val message = SendMessage()
         message.chatId = chatId.toString()
-        message.text = localizedMessageService.getMessage("main_menu.prompt", chatId)
+        message.text = localizedMessageService.getMessage(MessageKey.MAIN_MENU_PROMPT, chatId)
 
         val markup = ReplyKeyboardMarkup().apply {
             keyboard = listOf(
                 KeyboardRow().apply {
-                    add(KeyboardButton(localizedMessageService.getMessage("button.menu", chatId)))
-                    add(KeyboardButton(localizedMessageService.getMessage("button.cart", chatId)))
+                    add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_MENU, chatId)))
+                    add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_CART, chatId)))
                 },
                 KeyboardRow().apply {
-                    add(KeyboardButton(localizedMessageService.getMessage("button.my_addresses", chatId)))
-                    add(KeyboardButton(localizedMessageService.getMessage("button.settings", chatId)))
+                    add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_MY_ADDRESSES, chatId)))
+                    add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_SETTINGS, chatId)))
                 }
             )
             resizeKeyboard = true
@@ -697,7 +698,7 @@ class TelegramBot(
         }
 
         val backRow = KeyboardRow()
-        backRow.add(KeyboardButton(localizedMessageService.getMessage("button.return", chatId)))
+        backRow.add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)))
         keyboard.add(backRow)
 
         replyKeyboardMarkup.keyboard = keyboard
@@ -705,15 +706,61 @@ class TelegramBot(
 
         val message = SendMessage()
         message.chatId = chatId.toString()
-        message.text = localizedMessageService.getMessage("category.choose", chatId)
+        message.text = localizedMessageService.getMessage(MessageKey.CATEGORY_CHOOSE, chatId)
         message.replyMarkup = replyKeyboardMarkup
 
         execute(message)
     }
 
+    private fun showProductMenu(chatId: Long, categoryId: Long) {
+        setPreviousState(chatId, getCurrentState(chatId))
+        setMenuState(chatId, MenuStates.PRODUCT_VIEW)
+
+        userStateService.setTemporaryData(chatId, "current_category_id", categoryId.toString())
+
+        val message = SendMessage()
+        message.chatId = chatId.toString()
+
+        val markup = InlineKeyboardMarkup()
+        val keyboardRows = mutableListOf<List<InlineKeyboardButton>>()
+        val products = productService.getProductsByCategoryId(categoryId)
+
+        if (products.isEmpty()) {
+            message.text = localizedMessageService.getMessage(MessageKey.PRODUCT_NONE_IN_CATEGORY, chatId)
+        } else {
+            message.text = localizedMessageService.getMessage(MessageKey.PRODUCT_CHOOSE, chatId)
+
+            var currentRow = mutableListOf<InlineKeyboardButton>()
+            products.forEachIndexed { index, product ->
+                val localizedProductName = getLocalizedProductName(product.toDto(), chatId)
+
+                val productButton = InlineKeyboardButton(localizedProductName)
+                productButton.callbackData = "product:${product.id}"
+
+
+                currentRow.add(productButton)
+
+                if (index % 2 == 1 || index == products.size - 1) {
+                    keyboardRows.add(currentRow)
+                    if (index != products.size - 1) {
+                        currentRow = mutableListOf()
+                    }
+                }
+            }
+        }
+
+        val returnButton = InlineKeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId))
+        returnButton.callbackData = "main_menu"
+        keyboardRows.add(listOf(returnButton))
+
+        markup.keyboard = keyboardRows
+        message.replyMarkup = markup
+        sendMessage(chatId, message)
+    }
+
     private fun handleProductSelection(chatId: Long, productId: Long) {
         val product = productService.getProductById(productId) ?: run {
-            sendMessage(chatId, localizedMessageService.getMessage("error.product_not_found", chatId))
+            sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_PRODUCT_NOT_FOUND, chatId))
             return
         }
 
@@ -739,35 +786,32 @@ class TelegramBot(
             ),
             listOf(
                 InlineKeyboardButton().apply {
-                    text = "Add to Cart"
+                    text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)
                     callbackData = "add_to_cart:$productId:1"
                 }
             ),
             listOf(
                 InlineKeyboardButton().apply {
-                    text = "Back"
+                    text = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
                     callbackData = "back_to_products"
                 }
             )
         )
 
-        sendMessage(
-            chatId,
-            SendMessage().apply {
-                text = "Product: ${product.name}\nPrice: ${product.price} ${product.currency}\nQuantity: 1"
-                replyMarkup = markup
-            }
-        )
+        val productName = getLocalizedProductName(product, chatId)
+        val message = SendMessage()
+        message.chatId = chatId.toString()
+        message.text = "$productName\nPrice: ${product.price} UZS\nQuantity: 1"
+        message.replyMarkup = markup
+
+        execute(message)
     }
 
     private fun handleQuantityAdjustment(callbackQuery: CallbackQuery) {
         val chatId = callbackQuery.message?.chatId ?: return
-        val data = callbackQuery.data ?: return
         val messageId = callbackQuery.message?.messageId ?: return
-
-        val parts = data.split(":")
-        if (parts.size < 3) return
-
+        
+        val parts = callbackQuery.data.split(":")
         val action = parts[0]
         val productId = parts[1].toLong()
         var currentQuantity = parts[2].toInt()
@@ -783,7 +827,7 @@ class TelegramBot(
             }
             "add_to_cart" -> {
                 cartService.addItemToCart(chatId, productId, currentQuantity)
-                sendLocalizedMessage(chatId, "cart.added_items", currentQuantity)
+                sendLocalizedMessage(MessageKey.CART_ADDED_ITEMS, chatId, currentQuantity)
                 handleViewCart(chatId)
                 return
             }
@@ -811,13 +855,13 @@ class TelegramBot(
             ),
             listOf(
                 InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage("button.add_to_cart", chatId)
+                    text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)
                     callbackData = "add_to_cart:$productId:$currentQuantity"
                 }
             ),
             listOf(
                 InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage("button.return", chatId)
+                    text = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
                     callbackData = "back_to_products"
                 }
             )
@@ -834,17 +878,17 @@ class TelegramBot(
             logger.error("Error updating message: ${e.message}", e)
         }
     }
-
+    
     private fun handleViewCart(chatId: Long) {
         try {
             val cart = cartService.getCart(chatId)
 
             if (cart.items.isEmpty()) {
-                sendLocalizedMessage(chatId, "cart.empty")
+                sendLocalizedMessage(MessageKey.CART_EMPTY, chatId)
                 return
             }
 
-            val messageBuilder = StringBuilder(localizedMessageService.getMessage("cart.title", chatId))
+            val messageBuilder = StringBuilder(localizedMessageService.getMessage(MessageKey.CART_TITLE, chatId))
             messageBuilder.append("\n\n")
 
             var total = 0.0
@@ -856,7 +900,7 @@ class TelegramBot(
                 messageBuilder.append("$productName x ${item.quantity} = ${itemTotal}\n")
             }
 
-            messageBuilder.append("\n${localizedMessageService.getMessage("cart.total", chatId)}: $total")
+            messageBuilder.append("\n${localizedMessageService.getMessage(MessageKey.CART_TOTAL, chatId)}: $total")
 
             val message = SendMessage()
             message.chatId = chatId.toString()
@@ -865,11 +909,11 @@ class TelegramBot(
             val markup = InlineKeyboardMarkup()
             val keyboardRows = mutableListOf<List<InlineKeyboardButton>>()
 
-            val checkoutButton = InlineKeyboardButton(localizedMessageService.getMessage("button.checkout", chatId))
+            val checkoutButton = InlineKeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_CHECKOUT, chatId))
             checkoutButton.callbackData = "checkout"
 
             val continueButton =
-                InlineKeyboardButton(localizedMessageService.getMessage("button.continue_shopping", chatId))
+                InlineKeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_CONTINUE_SHOPPING, chatId))
             continueButton.callbackData = "main_menu"
 
             keyboardRows.add(listOf(checkoutButton))
@@ -880,7 +924,7 @@ class TelegramBot(
 
             sendMessage(chatId, message)
         } catch (e: Exception) {
-            sendLocalizedMessage(chatId, "error.cart.view_failed")
+            sendLocalizedMessage(MessageKey.ERROR_CART_VIEW_FAILED, chatId)
         }
     }
 
@@ -889,13 +933,13 @@ class TelegramBot(
             val cart = cartService.getCart(chatId)
 
             if (cart.items.isEmpty()) {
-                sendLocalizedMessage(chatId, "cart.empty")
+                sendLocalizedMessage(MessageKey.CART_EMPTY, chatId)
                 return
             }
 
             val user = userRepository.findByTelegramChatId(chatId)
             if (user == null) {
-                sendLocalizedMessage(chatId, "error.auth.required")
+                sendLocalizedMessage(MessageKey.ERROR_AUTH_REQUIRED, chatId)
                 setState(chatId, BotState.START)
                 handleStartCommand(chatId)
                 return
@@ -904,14 +948,14 @@ class TelegramBot(
             val addresses = addressRepository.findAllByUserIdAndDeletedFalse(user.id!!)
 
             if (addresses.isEmpty()) {
-                sendLocalizedMessage(chatId, "checkout.no_addresses")
+                sendLocalizedMessage(MessageKey.CHECKOUT_NO_ADDRESSES, chatId)
                 enterAddress(chatId)
                 return
             }
 
             val message = SendMessage()
             message.chatId = chatId.toString()
-            message.text = localizedMessageService.getMessage("checkout.select_address", chatId)
+            message.text = localizedMessageService.getMessage(MessageKey.CHECKOUT_SELECT_ADDRESS, chatId)
 
             val markup = InlineKeyboardMarkup()
             val keyboardRows = mutableListOf<List<InlineKeyboardButton>>()
@@ -925,7 +969,7 @@ class TelegramBot(
             }
 
             val addNewAddressButton = InlineKeyboardButton().apply {
-                text = localizedMessageService.getMessage("button.add_new_address", chatId)
+                text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_NEW_ADDRESS, chatId)
                 callbackData = "add_address"
             }
             keyboardRows.add(listOf(addNewAddressButton))
@@ -937,64 +981,18 @@ class TelegramBot(
             setState(chatId, BotState.AWAITING_ADDRESS_SELECTION)
         } catch (e: Exception) {
             logger.error("Error during checkout: ${e.message}", e)
-            sendLocalizedMessage(chatId, "error.checkout")
+            sendLocalizedMessage(MessageKey.ERROR_CHECKOUT, chatId)
         }
     }
 
     private fun proceedToOrderConfirmation(chatId: Long) {
         val cart = cartService.getCart(chatId)
         if (cart.items.isEmpty()) {
-            sendMessage(chatId, localizedMessageService.getMessage("cart.empty", chatId))
+            sendMessage(chatId, localizedMessageService.getMessage(MessageKey.CART_EMPTY, chatId))
             return
         }
 
         showOrderConfirmation(chatId, cart)
-    }
-
-    private fun showProductMenu(chatId: Long, categoryId: Long) {
-        setPreviousState(chatId, getCurrentState(chatId))
-        setMenuState(chatId, MenuStates.PRODUCT_VIEW)
-
-        userStateService.setTemporaryData(chatId, "current_category_id", categoryId.toString())
-
-        val message = SendMessage()
-        message.chatId = chatId.toString()
-
-        val markup = InlineKeyboardMarkup()
-        val keyboardRows = mutableListOf<List<InlineKeyboardButton>>()
-        val products = productService.getProductsByCategoryId(categoryId)
-
-        if (products.isEmpty()) {
-            message.text = localizedMessageService.getMessage("product.none_in_category", chatId)
-        } else {
-            message.text = localizedMessageService.getMessage("product.choose", chatId)
-
-            var currentRow = mutableListOf<InlineKeyboardButton>()
-            products.forEachIndexed { index, product ->
-                val localizedProductName = getLocalizedProductName(product.toDto(), chatId)
-
-                val productButton = InlineKeyboardButton(localizedProductName)
-                productButton.callbackData = "product:${product.id}"
-
-
-                currentRow.add(productButton)
-
-                if (index % 2 == 1 || index == products.size - 1) {
-                    keyboardRows.add(currentRow)
-                    if (index != products.size - 1) {
-                        currentRow = mutableListOf()
-                    }
-                }
-            }
-        }
-
-        val returnButton = InlineKeyboardButton(localizedMessageService.getMessage("button.return", chatId))
-        returnButton.callbackData = "main_menu"
-        keyboardRows.add(listOf(returnButton))
-
-        markup.keyboard = keyboardRows
-        message.replyMarkup = markup
-        sendMessage(chatId, message)
     }
 
     private fun handleReturnAction(chatId: Long) {
@@ -1032,16 +1030,14 @@ class TelegramBot(
         try {
             execute(message)
         } catch (e: TelegramApiException) {
-             sendMessage(chatId, localizedMessageService.getMessage("error.send_failed", chatId))
+             sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_SEND_FAILED, chatId))
         }
     }
-
-
-    private fun sendLocalizedMessage(chatId: Long, key: String, vararg args: Any) {
+    
+    private fun sendLocalizedMessage(key: MessageKey, chatId: Long, vararg args: Any) {
         val localizedText = localizedMessageService.getMessage(key, chatId, *args)
         sendMessage(chatId, localizedText)
     }
-
 
     private fun getLocalizedProductName(product: ProductDTO, chatId: Long): String {
         val locale = localeService.getUserLocale(chatId)
@@ -1051,7 +1047,6 @@ class TelegramBot(
             else -> product.name
         }
     }
-
 
     private fun showSettingsMenu(chatId: Long) {
         val markup = InlineKeyboardMarkup()
@@ -1070,7 +1065,7 @@ class TelegramBot(
 
         keyboardRows.add(listOf(
             InlineKeyboardButton().apply {
-                text = localizedMessageService.getMessage("button.return", chatId)
+                text = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
                 callbackData = "main_menu"
             }
         ))
@@ -1078,7 +1073,7 @@ class TelegramBot(
         markup.keyboard = keyboardRows
 
         sendMessage(chatId, SendMessage().apply {
-            text = localizedMessageService.getMessage("language.select", chatId)
+            text = localizedMessageService.getMessage(MessageKey.LANGUAGE_SELECT, chatId)
             replyMarkup = markup
         })
     }
@@ -1089,14 +1084,14 @@ class TelegramBot(
 
     private fun showAddresses(chatId: Long) {
         val user = getCurrentUser(chatId) ?: run {
-            sendLocalizedMessage(chatId, "error.auth.required")
+            sendLocalizedMessage(MessageKey.ERROR_AUTH_REQUIRED, chatId)
             return
         }
 
         val addresses = addressRepository.findAllByUserIdAndDeletedFalse(user.id!!)
 
         if (addresses.isEmpty()) {
-            sendLocalizedMessage(chatId, "address.none")
+            sendLocalizedMessage(MessageKey.ADDRESS_NONE, chatId)
 
             val message = SendMessage()
             message.chatId = chatId.toString()
@@ -1105,13 +1100,13 @@ class TelegramBot(
             markup.keyboard = listOf(
                 listOf(
                     InlineKeyboardButton().apply {
-                        text = localizedMessageService.getMessage("button.add_new_address", chatId)
+                        text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_NEW_ADDRESS, chatId)
                         callbackData = "add_address"
                     }
                 ),
                 listOf(
                     InlineKeyboardButton().apply {
-                        text = localizedMessageService.getMessage("button.main_menu", chatId)
+                        text = localizedMessageService.getMessage(MessageKey.BUTTON_MAIN_MENU, chatId)
                         callbackData = "main_menu"
                     }
                 )
@@ -1122,7 +1117,7 @@ class TelegramBot(
             return
         }
 
-        val messageBuilder = StringBuilder(localizedMessageService.getMessage("address.list_title", chatId))
+        val messageBuilder = StringBuilder(localizedMessageService.getMessage(MessageKey.ADDRESS_LIST_TITLE, chatId))
         messageBuilder.append("\n\n")
 
         val markup = InlineKeyboardMarkup()
@@ -1141,14 +1136,14 @@ class TelegramBot(
 
         keyboardRows.add(listOf(
             InlineKeyboardButton().apply {
-                text = localizedMessageService.getMessage("button.add_new_address", chatId)
+                text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_NEW_ADDRESS, chatId)
                 callbackData = "add_address"
             }
         ))
 
         keyboardRows.add(listOf(
             InlineKeyboardButton().apply {
-                text = localizedMessageService.getMessage("button.main_menu", chatId)
+                text = localizedMessageService.getMessage(MessageKey.BUTTON_MAIN_MENU, chatId)
                 callbackData = "main_menu"
             }
         ))
@@ -1161,32 +1156,9 @@ class TelegramBot(
         })
     }
 
-    private fun promptForDataDeletion(chatId: Long) {
-        val markup = InlineKeyboardMarkup()
-        markup.keyboard = listOf(
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = "✅ Yes, delete my data"
-                    callbackData = "confirm_delete_data"
-                }
-            ),
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = "❌ No, keep my data"
-                    callbackData = "main_menu"
-                }
-            )
-        )
-
-        sendMessage(chatId, SendMessage().apply {
-            text = "Are you sure you want to delete all your data? This action cannot be undone."
-            replyMarkup = markup
-        })
-    }
-
     private fun showProductDetailsOrAddToCart(chatId: Long, productId: Long) {
         val product = productService.getProductById(productId) ?: run {
-            sendLocalizedMessage(chatId, "error.product_not_found")
+            sendLocalizedMessage(MessageKey.ERROR_PRODUCT_NOT_FOUND, chatId)
             return
         }
 
@@ -1194,19 +1166,19 @@ class TelegramBot(
         val messageBuilder = StringBuilder("*$localizedName*\n\n")
 
         messageBuilder.append("${product.description}\n\n")
-        messageBuilder.append("*${localizedMessageService.getMessage("price", chatId)}: ${product.price} UZS*")
+        messageBuilder.append("*${localizedMessageService.getMessage(MessageKey.PRICE, chatId)}: ${product.price} UZS*")
 
         val markup = InlineKeyboardMarkup()
         markup.keyboard = listOf(
             listOf(
                 InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage("button.add_to_cart", chatId)
+                    text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)
                     callbackData = "add_to_cart:${product.id}:1"
                 }
             ),
             listOf(
                 InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage("button.return", chatId)
+                    text = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
                     callbackData = "back_to_products"
                 }
             )
@@ -1252,11 +1224,11 @@ class TelegramBot(
         markup.keyboard = listOf(
             listOf(
                 InlineKeyboardButton().apply {
-                    text = "✅ " + localizedMessageService.getMessage("button.confirm_order", chatId)
+                    text = "✅ " + localizedMessageService.getMessage(MessageKey.BUTTON_CONFIRM_ORDER, chatId)
                     callbackData = "confirm_order"
                 },
                 InlineKeyboardButton().apply {
-                    text = "❌ " + localizedMessageService.getMessage("button.cancel", chatId)
+                    text = "❌ " + localizedMessageService.getMessage(MessageKey.BUTTON_CANCEL, chatId)
                     callbackData = "cancel_order"
                 }
             )
@@ -1275,20 +1247,20 @@ class TelegramBot(
         try {
             val cart = cartService.getCart(chatId)
             if (cart.items.isEmpty()) {
-                sendMessage(chatId, localizedMessageService.getMessage("cart.empty", chatId))
+                sendMessage(chatId, localizedMessageService.getMessage(MessageKey.CART_EMPTY, chatId))
                 return
             }
 
             val user = userRepository.findByTelegramChatId(chatId)
             if (user == null) {
-                sendLocalizedMessage(chatId, "error.auth.required")
+                sendLocalizedMessage(MessageKey.ERROR_AUTH_REQUIRED, chatId)
                 setState(chatId, BotState.START)
                 handleStartCommand(chatId)
                 return
             }
 
             val addressId = orderManager.getAddressId(chatId) ?: run {
-                sendMessage(chatId, localizedMessageService.getMessage("error.address.required", chatId))
+                sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_ADDRESS_REQUIRED, chatId))
                 handleAddressRequest(chatId)
                 return
             }
@@ -1313,22 +1285,22 @@ class TelegramBot(
 
                 cartService.clearCart(chatId)
 
-                val message = StringBuilder(localizedMessageService.getMessage("order.confirmed", chatId))
+                val message = StringBuilder(localizedMessageService.getMessage(MessageKey.ORDER_CONFIRMED, chatId))
                 message.append("\n")
-                message.append(localizedMessageService.getMessage("order.id", chatId, orderDto.id!!))
+                message.append(localizedMessageService.getMessage(MessageKey.ORDER_ID, chatId, orderDto.id!!))
                 message.append("\n")
-                message.append(localizedMessageService.getMessage("order.total", chatId, orderDto.totalAmount))
+                message.append(localizedMessageService.getMessage(MessageKey.ORDER_TOTAL, chatId, orderDto.totalAmount))
 
                 sendMessage(chatId, message.toString())
 
                 showMainMenu(chatId)
             } catch (e: Exception) {
                 logger.error("Failed to create order: ${e.message}", e)
-                sendMessage(chatId, localizedMessageService.getMessage("order.failed", chatId))
+                sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ORDER_FAILED, chatId))
             }
         } catch (e: Exception) {
             logger.error("Error confirming order: ${e.message}", e)
-            sendMessage(chatId, localizedMessageService.getMessage("error.generic", chatId))
+            sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
         }
     }
 
@@ -1394,6 +1366,29 @@ class TelegramBot(
             ?: throw ResourceNotFoundException("User not found for chat ID: $chatId")
     }
 
+    private fun promptForDataDeletion(chatId: Long) {
+        val markup = InlineKeyboardMarkup()
+        markup.keyboard = listOf(
+            listOf(
+                InlineKeyboardButton().apply {
+                    text = "✅ Yes, delete my data"
+                    callbackData = "confirm_delete_data"
+                }
+            ),
+            listOf(
+                InlineKeyboardButton().apply {
+                    text = "❌ No, keep my data"
+                    callbackData = "main_menu"
+                }
+            )
+        )
+
+        sendMessage(chatId, SendMessage().apply {
+            text = "Are you sure you want to delete all your data? This action cannot be undone."
+            replyMarkup = markup
+        })
+    }
+
     private fun getCurrentState(chatId: Long): BotState {
         return userStateService.getCurrentState(chatId)
     }
@@ -1453,5 +1448,4 @@ class OrderManager(
         val orderData = orderDataRepository.findByUserIdAndDeletedFalse(user.id!!)
         return orderData?.address?.id
     }
-
 }

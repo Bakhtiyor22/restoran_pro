@@ -37,12 +37,6 @@ enum class UserStatus {
     EXISTS, CREATED, NOT_FOUND
 }
 
-enum class MessageKey {
-    OTP_REQUEST,
-    NEGATIVE_PRICE,
-    MAIN_MENU
-}
-
 enum class PaginationFieldName {
     PAGE,
     LIMIT

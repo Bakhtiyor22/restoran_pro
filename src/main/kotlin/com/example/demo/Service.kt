@@ -217,6 +217,11 @@ interface LocaleService {
 }
 
 interface LocalizedMessageService {
+    // New methods using MessageKey enum
+    fun getMessage(key: MessageKey, chatId: Long, vararg args: Any): String
+    fun getMessage(key: MessageKey, locale: Locale, vararg args: Any): String
+    
+    // Keep original methods for backward compatibility
     fun getMessage(key: String, chatId: Long, vararg args: Any): String
     fun getMessage(key: String, locale: Locale, vararg args: Any): String
 }
@@ -967,7 +972,9 @@ class OrderServiceImpl(
             throw ValidationException(paymentRequest.amount)
         }
 
-        val result = paymentService.processOrderPayment(order.user.id!!, orderId, paymentRequest)
+        val result = paymentService.processOrderPayment(
+            order.user.id!!, orderId, paymentRequest
+        )
         if (result.code == 200) {
             order.status = OrderStatus.ACCEPTED
             orderRepository.save(order)
@@ -1663,6 +1670,23 @@ class LocalizedMessageServiceImpl(
         } catch (e: Exception) {
             logger.error("Error retrieving message for key '{}', locale '{}': {}", key, locale, e.message)
             key
+        }
+    }
+
+    override fun getMessage(key: MessageKey, chatId: Long, vararg args: Any): String {
+        val userLocale = localeService.getUserLocale(chatId)
+        return getMessage(key, userLocale, *args)
+    }
+
+    override fun getMessage(key: MessageKey, locale: Locale, vararg args: Any): String {
+        return try {
+            messageSource.getMessage(key.name, args, locale)
+        } catch (e: NoSuchMessageException) {
+            logger.warn("Missing translation for key '{}' and locale '{}'. Using key as fallback.", key, locale)
+            key.name
+        } catch (e: Exception) {
+            logger.error("Error retrieving message for key '{}', locale '{}': {}", key, locale, e.message)
+            key.name
         }
     }
 }
