@@ -31,9 +31,14 @@ import java.math.BigDecimal
 import java.nio.charset.StandardCharsets
 import java.time.LocalDate
 import java.time.LocalDateTime
-import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
+import org.springframework.stereotype.Component
+import java.util.concurrent.ConcurrentHashMap
+import java.util.Locale
+import org.springframework.context.annotation.Primary
+import jakarta.annotation.PreDestroy
+import org.springframework.scheduling.annotation.Scheduled
 
 interface OTPService {
     fun generateOTP(phoneNumber: String): Long
@@ -199,31 +204,9 @@ interface CartService {
     fun clearCart(chatId: Long)
 }
 
-interface UserStateService {
-    fun getCurrentState(chatId: Long): BotState
-    fun setState(chatId: Long, state: BotState)
-    fun setPreviousState(chatId: Long, state: BotState)
-    fun getPreviousState(chatId: Long): BotState
-    fun getMenuState(chatId: Long): MenuStates
-    fun setMenuState(chatId: Long, menuState: MenuStates)
-    fun setTemporaryData(chatId: Long, key: String, value: String)
-    fun getTemporaryData(chatId: Long, key: String): String?
-    fun clearTemporaryData(chatId: Long)
-}
-
-interface LocaleService {
-    fun getUserLocale(chatId: Long): Locale
-    fun setUserLocale(chatId: Long, languageCode: String)
-}
-
 interface LocalizedMessageService {
-    // New methods using MessageKey enum
     fun getMessage(key: MessageKey, chatId: Long, vararg args: Any): String
     fun getMessage(key: MessageKey, locale: Locale, vararg args: Any): String
-    
-    // Keep original methods for backward compatibility
-    fun getMessage(key: String, chatId: Long, vararg args: Any): String
-    fun getMessage(key: String, locale: Locale, vararg args: Any): String
 }
 
 @Service
@@ -232,48 +215,23 @@ class AuthServiceImpl(
     private val userRepository: UserRepository,
     private val jwtUtils: JwtUtils,
     private val passwordEncoder: PasswordEncoder,
-    private val userStateRepository: UserStateRepository,
+    private val stateManager: InMemoryStateManager
 ) : AuthService {
     private val logger = LoggerFactory.getLogger(javaClass)
+
 
     override fun requestOtp(otpRequest: OtpRequest, chatId: Long?): OtpIdResponse {
         val phoneNumber = otpRequest.phoneNumber
         if (!validatePhoneNumber(phoneNumber)) throw InvalidInputException(phoneNumber)
 
-        // First check if there's an existing user with this chatId
-        val user = if (chatId != null) userRepository.findByTelegramChatId(chatId) else null
-
-        // Instead of directly updating the phone number, store it temporarily
-        // We'll store it in the user's temporary data until verified
-        if (user != null) {
-            // Store temporarily, but don't update user record yet
-            val userState = userStateRepository.findByUserId(user.id!!) ?: run {
-                val newState = UserState(user = user)
-                userStateRepository.save(newState)
-            }
-
-            // Store phone number as temporary data
-            val tempData = userState.temporaryData
-            val dataMap = if (tempData.isNullOrEmpty()) {
-                mutableMapOf<String, String>()
-            } else {
-                try {
-                    val objectMapper = ObjectMapper()
-                    objectMapper.readValue(tempData, object : TypeReference<MutableMap<String, String>>() {})
-                } catch (e: Exception) {
-                    mutableMapOf<String, String>()
-                }
-            }
-
-            dataMap["pending_phone_number"] = phoneNumber
-            userState.temporaryData = ObjectMapper().writeValueAsString(dataMap)
-            userStateRepository.save(userState)
-
-            logger.info("Stored pending phone number $phoneNumber for verification")
+        // Use stateManager to store the phone number temporarily for this chat session
+        if (chatId != null) {
+            stateManager.setTemporaryData(chatId, "pending_phone_number", phoneNumber)
+            logger.info("Stored pending phone number $phoneNumber for verification in state manager for chat $chatId")
         } else {
-            // User doesn't exist with this chatId
-            logger.error("No user found for chatId $chatId during OTP request")
-            throw ResourceNotFoundException(chatId)
+            // Handle case where chatId is null if necessary, or throw error
+            logger.error("ChatId is null during OTP request, cannot store pending phone number.")
+            // Depending on logic, you might throw an exception here
         }
 
         val otpId = otpService.generateOTP(phoneNumber)
@@ -1591,7 +1549,6 @@ class CartServiceImpl(
         val product = productRepository.findByIdAndDeletedFalse(productId)
             ?: throw ResourceNotFoundException("Product not found: $productId")
 
-        // Check if item already exists in cart
         val existingItem = cart.items.find { it.product.id == productId }
         if (existingItem != null) {
             existingItem.quantity += quantity
@@ -1651,30 +1608,13 @@ class CartServiceImpl(
 @Service
 class LocalizedMessageServiceImpl(
     private val messageSource: MessageSource,
-    private val localeService: LocaleService
+    private val stateManager: InMemoryStateManager
 ) : LocalizedMessageService {
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    override fun getMessage(key: String, chatId: Long, vararg args: Any): String {
-        val userLocale = localeService.getUserLocale(chatId)
-        return getMessage(key, userLocale, *args)
-    }
-
-    override fun getMessage(key: String, locale: Locale, vararg args: Any): String {
-        return try {
-            messageSource.getMessage(key, args, locale)
-        } catch (e: NoSuchMessageException) {
-            logger.warn("Missing translation for key '{}' and locale '{}'. Using key as fallback.", key, locale)
-            key
-        } catch (e: Exception) {
-            logger.error("Error retrieving message for key '{}', locale '{}': {}", key, locale, e.message)
-            key
-        }
-    }
-
     override fun getMessage(key: MessageKey, chatId: Long, vararg args: Any): String {
-        val userLocale = localeService.getUserLocale(chatId)
+        val userLocale = stateManager.getUserLocale(chatId)
         return getMessage(key, userLocale, *args)
     }
 
@@ -1691,195 +1631,148 @@ class LocalizedMessageServiceImpl(
     }
 }
 
-@Service
-class UserStateServiceImpl(
-    private val userStateRepository: UserStateRepository,
-    private val userRepository: UserRepository
-) : UserStateService {
-    private val objectMapper = ObjectMapper()
+@Component
+@Primary
+class InMemoryStateManager(
+    private val userRepository: UserRepository,
+    private val userStateRepository: UserStateRepository
+) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val objectMapper = ObjectMapper()
 
-    fun getUserState(chatId: Long): UserState {
-        val user = userRepository.findByTelegramChatId(chatId) ?: throw ResourceNotFoundException(chatId)
+    private val userCache = ConcurrentHashMap<Long, User>()
 
-        return userStateRepository.findByUserId(user.id!!) ?: run {
+    private val currentStates = ConcurrentHashMap<Long, BotState>()
+
+    private val previousStates = ConcurrentHashMap<Long, BotState>()
+
+    private val menuStates = ConcurrentHashMap<Long, MenuStates>()
+
+    private val temporaryData = ConcurrentHashMap<Long, MutableMap<String, String>>()
+
+    private val userLocales = ConcurrentHashMap<Long, Locale>()
+
+    fun getUser(chatId: Long): User? {
+        return userCache[chatId] ?: run {
+            val user = userRepository.findByTelegramChatId(chatId)
+            if (user != null) {
+                userCache[chatId] = user
+            }
+            user
+        }
+    }
+
+    fun cacheUser(user: User) {
+        if (user.telegramChatId != null) {
+            userCache[user.telegramChatId!!] = user
+        }
+    }
+
+    fun getCurrentState(chatId: Long): BotState {
+        return currentStates.getOrDefault(chatId, BotState.START)
+    }
+
+    fun setState(chatId: Long, state: BotState) {
+        previousStates[chatId] = currentStates.getOrDefault(chatId, BotState.START)
+        currentStates[chatId] = state
+    }
+
+    fun getPreviousState(chatId: Long): BotState {
+        return previousStates.getOrDefault(chatId, BotState.START)
+    }
+
+    fun setPreviousState(chatId: Long, state: BotState) {
+        previousStates[chatId] = state
+    }
+
+    fun getMenuState(chatId: Long): MenuStates {
+        return menuStates.getOrDefault(chatId, MenuStates.MAIN_MENU)
+    }
+
+    fun setMenuState(chatId: Long, state: MenuStates) {
+        menuStates[chatId] = state
+    }
+
+    fun getTemporaryData(chatId: Long, key: String): String? {
+        return temporaryData[chatId]?.get(key)
+    }
+
+    fun setTemporaryData(chatId: Long, key: String, value: String) {
+        val userData = temporaryData.computeIfAbsent(chatId) { mutableMapOf() }
+        userData[key] = value
+    }
+
+    fun clearTemporaryData(chatId: Long) {
+        temporaryData.remove(chatId)
+    }
+
+    fun getUserLocale(chatId: Long): Locale {
+        return userLocales.getOrDefault(chatId, Locale.forLanguageTag("uz"))
+    }
+
+    fun setUserLocale(chatId: Long, languageCode: String) {
+        userLocales[chatId] = Locale.forLanguageTag(languageCode)
+    }
+
+    @Scheduled(fixedRate = 300000) // Every 5 minutes
+    fun syncCriticalDataToDatabase() {
+        logger.info("Syncing critical user data to database")
+        try {
+            // Only sync verified users and their critical data
+            userCache.forEach { (chatId, user) ->
+                val locale = userLocales[chatId]
+                if (locale != null) {
+                    val userState = getUserStateFromDb(user.id!!)
+                    val dataMap = getTemporaryDataMapFromDb(userState)
+                    dataMap["locale"] = locale.language
+                    userState.temporaryData = objectMapper.writeValueAsString(dataMap)
+                    userStateRepository.save(userState)
+                }
+
+                val phoneVerified = temporaryData[chatId]?.get("phone_verified")
+                if (phoneVerified == "true") {
+                    val userState = getUserStateFromDb(user.id!!)
+                    val dataMap = getTemporaryDataMapFromDb(userState)
+                    dataMap["phone_verified"] = "true"
+                    userState.temporaryData = objectMapper.writeValueAsString(dataMap)
+                    userStateRepository.save(userState)
+                }
+
+                val currentState = currentStates[chatId]
+                if (currentState == BotState.REGISTERED) {
+                    val userState = getUserStateFromDb(user.id!!)
+                    userState.currentState = BotState.REGISTERED
+                    userStateRepository.save(userState)
+                }
+            }
+        } catch (e: Exception) {
+            logger.error("Error syncing data to database: ${e.message}", e)
+        }
+    }
+
+    @PreDestroy
+    fun saveStateBeforeShutdown() {
+        logger.info("Saving state before shutdown")
+        syncCriticalDataToDatabase()
+    }
+
+    private fun getUserStateFromDb(userId: Long): UserState {
+        return userStateRepository.findByUserId(userId) ?: run {
+            val user = userRepository.findById(userId).orElseThrow { ResourceNotFoundException(userId) }
             val newState = UserState(user = user)
             userStateRepository.save(newState)
         }
     }
 
-    override fun getCurrentState(chatId: Long): BotState {
-        return try {
-            val user = userRepository.findByTelegramChatId(chatId)
-            if (user == null) {
-                logger.warn("No user found for chat $chatId, returning START state")
-                return BotState.START
-            }
-
-            val userState = userStateRepository.findByUserId(user.id!!)
-            userState?.currentState ?: BotState.START
-        } catch (e: Exception) {
-            logger.warn("Error getting state for chat $chatId: ${e.message}")
-            BotState.START
-        }
-    }
-
-    override fun setState(chatId: Long, state: BotState) {
-        try {
-            val user = userRepository.findByTelegramChatId(chatId)
-            if (user == null) {
-                logger.warn("Cannot set state for chat $chatId: User not found")
-                return
-            }
-
-            var userState = userStateRepository.findByUserId(user.id!!)
-            if (userState == null) {
-                userState = UserState(user = user)
-            }
-
-            userState.previousState = userState.currentState
-            userState.currentState = state
-            userStateRepository.save(userState)
-        } catch (e: Exception) {
-            logger.warn("Could not set state for chat $chatId: ${e.message}")
-        }
-    }
-
-    override fun setPreviousState(chatId: Long, state: BotState) {
-        try {
-            val userState = getUserState(chatId)
-            userState.previousState = state
-            userStateRepository.save(userState)
-        } catch (e: Exception) {
-            logger.warn("Could not set previous state for chat $chatId: ${e.message}")
-        }
-    }
-
-    override fun getPreviousState(chatId: Long): BotState {
-        return try {
-            getUserState(chatId).previousState ?: BotState.START
-        } catch (e: Exception) {
-            BotState.START
-        }
-    }
-
-    override fun getMenuState(chatId: Long): MenuStates {
-        return try {
-            getUserState(chatId).menuState
-        } catch (e: Exception) {
-            MenuStates.MAIN_MENU
-        }
-    }
-
-    override fun setMenuState(chatId: Long, menuState: MenuStates) {
-        try {
-            val userState = getUserState(chatId)
-            userState.menuState = menuState
-            userStateRepository.save(userState)
-        } catch (e: Exception) {
-            logger.warn("Could not set menu state for chat $chatId: ${e.message}")
-        }
-    }
-
-    override fun getTemporaryData(chatId: Long, key: String): String? {
-        try {
-            val userState = getUserState(chatId)
-            if (userState.temporaryData.isNullOrEmpty()) return null
-
-            val dataMap = objectMapper.readValue(userState.temporaryData, object : TypeReference<Map<String, String>>() {})
-            return dataMap[key]
-        } catch (e: Exception) {
-            logger.warn("Could not get temporary data for chat $chatId: ${e.message}")
-            return null
-        }
-    }
-
-    override fun setTemporaryData(chatId: Long, key: String, value: String) {
-        try {
-            val userState = getUserState(chatId)
-            val dataMap = if (userState.temporaryData.isNullOrEmpty()) {
+    private fun getTemporaryDataMapFromDb(userState: UserState): MutableMap<String, String> {
+        return if (userState.temporaryData.isNullOrEmpty()) {
+            mutableMapOf()
+        } else {
+            try {
+                objectMapper.readValue(userState.temporaryData, object : TypeReference<MutableMap<String, String>>() {})
+            } catch (e: Exception) {
                 mutableMapOf()
-            } else {
-                try {
-                    objectMapper.readValue(userState.temporaryData, object : TypeReference<MutableMap<String, String>>() {})
-                } catch (e: Exception) {
-                    mutableMapOf()
-                }
             }
-
-            dataMap[key] = value
-            userState.temporaryData = objectMapper.writeValueAsString(dataMap)
-            userStateRepository.save(userState)
-        } catch (e: Exception) {
-            logger.warn("Could not set temporary data for chat $chatId: ${e.message}")
-        }
-    }
-
-    override fun clearTemporaryData(chatId: Long) {
-        try {
-            val userState = getUserState(chatId)
-            userState.temporaryData = null
-            userStateRepository.save(userState)
-        } catch (e: Exception) {
-            logger.warn("Could not clear temporary data for chat $chatId: ${e.message}")
-        }
-    }
-}
-
-@Service
-class LocaleServiceImpl(
-    private val userRepository: UserRepository,
-    private val userStateRepository: UserStateRepository
-) : LocaleService {
-    private val logger = LoggerFactory.getLogger(javaClass)
-
-    override fun getUserLocale(chatId: Long): Locale {
-        try {
-            val user = userRepository.findByTelegramChatId(chatId) ?: return Locale.forLanguageTag("uz")
-            val userState = userStateRepository.findByUserId(user.id!!)
-
-            val temporaryData = userState?.temporaryData
-            if (temporaryData != null) {
-                val objectMapper = ObjectMapper()
-                val dataMap = try {
-                    objectMapper.readValue(temporaryData, object : TypeReference<Map<String, String>>() {})
-                } catch (e: Exception) {
-                    null
-                }
-
-                val locale = dataMap?.get("locale")
-                if (locale != null) {
-                    return Locale.forLanguageTag(locale)
-                }
-            }
-
-            return Locale.forLanguageTag("uz")
-        } catch (e: Exception) {
-            return Locale.forLanguageTag("uz")
-        }
-    }
-
-    override fun setUserLocale(chatId: Long, languageCode: String) {
-        try {
-            val user = userRepository.findByTelegramChatId(chatId) ?: return
-            val userState = userStateRepository.findByUserId(user.id!!) ?: return
-
-            val objectMapper = ObjectMapper()
-            val dataMap = if (userState.temporaryData.isNullOrEmpty()) {
-                mutableMapOf()
-            } else {
-                try {
-                    objectMapper.readValue(userState.temporaryData, object : TypeReference<MutableMap<String, String>>() {})
-                } catch (e: Exception) {
-                    mutableMapOf()
-                }
-            }
-
-            dataMap["locale"] = languageCode
-            userState.temporaryData = objectMapper.writeValueAsString(dataMap)
-            userStateRepository.save(userState)
-        } catch (e: Exception) {
-            logger.error(e.message)
         }
     }
 }

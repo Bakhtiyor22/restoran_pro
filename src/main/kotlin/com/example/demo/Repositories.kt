@@ -63,7 +63,6 @@ interface UserRepository : BaseRepository<User> {
 
 @Repository
 interface UserStateRepository : BaseRepository<UserState> {
-    fun findByUserTelegramChatId(chatId: Long): UserState?
     fun findByUserId(userId: Long): UserState?
 }
 
