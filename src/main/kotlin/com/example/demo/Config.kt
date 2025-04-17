@@ -39,6 +39,7 @@ import org.springframework.data.redis.connection.RedisConnectionFactory
 import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.data.redis.serializer.StringRedisSerializer
 import org.springframework.web.bind.support.WebDataBinderFactory
+import org.springframework.web.client.RestTemplate
 import org.springframework.web.context.request.NativeWebRequest
 import org.springframework.web.method.support.HandlerMethodArgumentResolver
 import org.springframework.web.method.support.ModelAndViewContainer
@@ -266,3 +267,11 @@ class RedisConfig {
     }
 }
 
+// You might need to configure a RestTemplate bean if you don't have one
+@Configuration
+class RestConfig {
+    @Bean
+    fun restTemplate(): RestTemplate {
+        return RestTemplate()
+    }
+}

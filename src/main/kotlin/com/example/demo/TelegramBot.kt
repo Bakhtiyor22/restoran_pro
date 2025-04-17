@@ -9,8 +9,13 @@ import org.telegram.telegrambots.meta.api.methods.send.SendMessage
 import org.telegram.telegrambots.meta.api.objects.Update
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.data.domain.PageRequest
 import org.telegram.telegrambots.meta.TelegramBotsApi
+import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
+import org.telegram.telegrambots.meta.api.methods.send.SendPhoto
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageCaption
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageReplyMarkup
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ForceReplyKeyboard
@@ -20,7 +25,9 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery
+import org.telegram.telegrambots.meta.api.objects.InputFile
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardRemove
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException
 import java.math.BigDecimal
@@ -40,7 +47,8 @@ class TelegramBot(
     private val orderService: OrderServiceImpl,
     private val orderManager: OrderManager,
     private val addressService: AddressService,
-    private val stateManager: InMemoryStateManager
+    private val stateManager: InMemoryStateManager,
+    private val geocodingService: GeocodingService
 ): TelegramLongPollingBot(botToken) {
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -119,30 +127,10 @@ class TelegramBot(
                             val location = message.location
 
                             sendMessage(chatId, localizedMessageService.getMessage(
-                                MessageKey.LOCATION_RECEIVED, chatId,
-                                location.latitude.toString(), location.longitude.toString()
+                                MessageKey.LOCATION_RECEIVED_PROCESSING, chatId // New message key
                             ))
 
-                            setTemporaryData(chatId, "temp_latitude", location.latitude.toString())
-                            setTemporaryData(chatId, "temp_longitude", location.longitude.toString())
-
-                            setState(chatId, BotState.AWAITING_ADDRESS_DETAILS)
-                            sendMessage(chatId, localizedMessageService.getMessage(
-                                MessageKey.ADDRESS_PROVIDE_DETAILS, chatId
-                            ))
-                        }
-
-                        message.hasText() && currentState == BotState.AWAITING_ADDRESS_DETAILS -> {
-                            val addressDetails = message.text
-                            val latitude = getTemporaryData(chatId, "temp_latitude")?.toDoubleOrNull()
-                            val longitude = getTemporaryData(chatId, "temp_longitude")?.toDoubleOrNull()
-
-                            if (latitude != null && longitude != null) {
-                                saveUserAddress(chatId, latitude, longitude, addressDetails)
-                            } else {
-                                sendLocalizedMessage(MessageKey.ERROR_GENERIC, chatId)
-                                enterAddress(chatId)
-                            }
+                            saveUserAddress(chatId, location.latitude, location.longitude)
                         }
 
                         message.hasContact() && currentState == BotState.AWAITING_PHONE -> {
@@ -178,6 +166,7 @@ class TelegramBot(
                 }
             }
         } catch (e: Exception) {
+            logger.warn(e.message)
             val chatId = update.message?.chatId ?: update.callbackQuery?.message?.chatId
             if (chatId != null) {
                 sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
@@ -193,64 +182,123 @@ class TelegramBot(
         try {
             if (data.contains(":")) {
                 val parts = data.split(":")
+                val action = parts[0]
 
-                when {
-                    data.startsWith("product:") -> {
-                        val productId = parts[1].toLong()
-                        handleProductSelection(chatId, productId)
+                when (action) {
+                    "increase_quantity", "decrease_quantity", "add_to_cart" -> {
+                        if (parts.size >= 3) {
+                            handleQuantityAdjustment(callbackQuery)
+                        } else {
+                            answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+                        }
                     }
-                    data.startsWith("category:") -> {
-                        val categoryId = parts[1].toLong()
-                        showProductMenu(chatId, categoryId)
-                    }
-                    data.startsWith("increase_quantity:") || data.startsWith("decrease_quantity:") || data.startsWith("add_to_cart:") -> {
-                        handleQuantityAdjustment(callbackQuery)
-                    }
-                    data.startsWith("address:") -> {
-                        val addressId = parts[1].toLong()
-                        editMessageReplyMarkup(chatId, messageId, null)
-                        processOrderWithAddress(chatId, addressId)
-                    }
-                    data.startsWith("select_address:") -> {
-                        editMessageReplyMarkup(chatId, messageId, null)
-                        handleAddressSelection(callbackQuery)
-                    }
-                    data.startsWith("set_lang:") -> {
-                        val langCode = parts[1]
-                        stateManager.setUserLocale(chatId, langCode)
 
-                        val confirmationText = localizedMessageService.getMessage(MessageKey.LANGUAGE_SELECTED, chatId)
-                        execute(EditMessageText().apply {
-                            setChatId(chatId.toString())
-                            setMessageId(messageId)
-                            text = confirmationText
-                            replyMarkup = null
-                        })
-
-                        proceedAfterLanguageSelected(chatId)
+                    "address" -> {
+                            if (parts.size >= 2) {
+                            val addressId = parts[1].toLong()
+                            editMessageReplyMarkup(chatId, messageId, null)
+                            processOrderWithAddress(chatId, addressId) // Proceeds to confirmation
+                            answerCallbackQuery(callbackQuery.id)
+                        } else {
+                            logger.warn("Invalid address callback data: $data")
+                            answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+                        }
                     }
+
+                    "select_address" -> {
+                        if (parts.size >= 2) {
+                            val addressId = parts[1].toLong()
+                            execute(EditMessageText().apply {
+                                setChatId(chatId.toString())
+                                setMessageId(messageId)
+                                text = localizedMessageService.getMessage(MessageKey.ADDRESS_SELECTED, chatId) + "\nID: ${addressId}" // Example confirmation
+                                replyMarkup = null
+                            })
+                            showMainMenu(chatId)
+                            answerCallbackQuery(callbackQuery.id)
+                        } else {
+                            logger.warn("Invalid select_address callback data: $data")
+                            answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+                        }
+                    }
+
+                    "set_lang" -> {
+                        if (parts.size >= 2) {
+                            val langCode = parts[1]
+                            stateManager.setUserLocale(chatId, langCode)
+                            val confirmationText = localizedMessageService.getMessage(MessageKey.LANGUAGE_SELECTED, chatId)
+                            execute(EditMessageText().apply {
+                                setChatId(chatId.toString())
+                                setMessageId(messageId)
+                                text = confirmationText
+                                replyMarkup = null
+                            })
+                            proceedAfterLanguageSelected(chatId)
+                            answerCallbackQuery(callbackQuery.id)
+                        } else {
+                            logger.warn("Invalid set_lang callback data: $data")
+                            answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+                        }
+                    }
+
+                    "view_order" -> {
+                        if (parts.size >= 2) {
+                            val orderId = parts[1].toLong()
+                            showOrderDetails(chatId, orderId, messageId)
+                        } else {
+                            logger.warn("Invalid view_order callback data: $data")
+                            answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+                        }
+                    }
+
+                    "confirm_delete_data" -> {
+                        logger.warn("confirm_delete_data should not contain a colon. Data: $data")
+                        answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+                    }
+
                     else -> {
-                        sendMessage(chatId, "Sorry.")
+                        logger.warn("Unhandled callback data with colon: $data")
+                        answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.UNKNOWN_COMMAND, chatId))
                     }
                 }
             } else {
                 when (data) {
                     "main_menu" -> {
-                        editMessageReplyMarkup(chatId, messageId, null)
+                        try {
+                            execute(EditMessageText().apply {
+                                setChatId(chatId.toString())
+                                setMessageId(messageId)
+                                text = localizedMessageService.getMessage(MessageKey.RETURNING_TO_MENU, chatId)
+                                replyMarkup = null
+                            })
+                        } catch (e: TelegramApiException) {
+                            logger.warn("Failed to edit message for main_menu callback: ${e.message}")
+                            try {
+                                editMessageReplyMarkup(chatId, messageId, null)
+                            } catch (e2: TelegramApiException) {
+                                logger.warn("Also failed to remove markup: ${e2.message}")
+                            }
+                        }
                         showMainMenu(chatId)
+                        answerCallbackQuery(callbackQuery.id)
                     }
-                    "view_cart" -> handleViewCart(chatId)
+
+                    "view_cart" -> {
+                        editMessageReplyMarkup(chatId, messageId, null)
+                        handleViewCart(chatId)
+                        answerCallbackQuery(callbackQuery.id)
+                    }
+
                     "checkout" -> {
                         editMessageReplyMarkup(chatId, messageId, null)
-                        handleCheckout(chatId)
+                        handleCheckout(chatId) // Shows address selection
+                        answerCallbackQuery(callbackQuery.id)
                     }
-                    "back_to_products" -> {
-                        editMessageReplyMarkup(chatId, messageId, null)
-                        showCategoriesMenu(chatId)
-                    }
+
                     "confirm_order" -> {
                         handleOrderConfirmation(callbackQuery)
                     }
+
                     "cancel_order" -> {
                         execute(EditMessageText().apply {
                             setChatId(chatId.toString())
@@ -259,16 +307,133 @@ class TelegramBot(
                             replyMarkup = null
                         })
                         showMainMenu(chatId)
+                        answerCallbackQuery(callbackQuery.id)
                     }
+
                     "add_address" -> {
-                        editMessageReplyMarkup(chatId, messageId, null)
+                        try {
+                            execute(EditMessageText().apply {
+                                setChatId(chatId.toString())
+                                setMessageId(messageId)
+                                text = localizedMessageService.getMessage(MessageKey.ADDRESS_PROMPT, chatId)
+                                replyMarkup = null
+                            })
+                        } catch (e: TelegramApiException) {
+                            logger.warn("Failed to edit message for add_address callback: ${e.message}")
+                        }
                         enterAddress(chatId)
+                        answerCallbackQuery(callbackQuery.id)
+                    }
+                    "back_to_product" -> {
+                        val productId = getTemporaryData(chatId, "current_product_id")?.toLongOrNull()
+                        if (productId != null) {
+                            try {
+                                execute(EditMessageText().apply {
+                                    setChatId(chatId.toString())
+                                    setMessageId(messageId)
+                                    text = localizedMessageService.getMessage(MessageKey.RETURNING_TO_PRODUCT, chatId)
+                                    replyMarkup = null // Remove inline buttons
+                                })
+                            } catch (e: TelegramApiException) {
+                                logger.warn("Failed to edit message: ${e.message}")
+                                try {
+                                    editMessageReplyMarkup(chatId, messageId, null)
+                                } catch (e2: TelegramApiException) {
+                                    logger.warn("Also failed to remove markup: ${e2.message}")
+                                }
+                            }
+
+                            showProductDetails(chatId, productId)
+                            answerCallbackQuery(callbackQuery.id)
+                        } else {
+                            logger.warn("No current product ID found for chat $chatId")
+                            answerCallbackQuery(callbackQuery.id, "Cannot return to product details")
+                            showCategoriesMenu(chatId)
+                        }
+                    }
+
+                    "quantity_info" -> {
+                        answerCallbackQuery(callbackQuery.id, "Current quantity")
+                    }
+
+                    "clear_cart" -> {
+                        try {
+                            cartService.clearCart(chatId)
+
+                            execute(EditMessageText().apply {
+                                setChatId(chatId.toString())
+                                setMessageId(messageId)
+                                text = localizedMessageService.getMessage(MessageKey.CART_CLEARED, chatId)
+                                replyMarkup = null
+                            })
+
+                            showMainMenu(chatId)
+
+                            answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.CART_CLEARED, chatId))
+
+                        } catch (e: Exception) {
+                            logger.error("Error clearing cart for chat $chatId: ${e.message}", e)
+                            answerCallbackQuery(callbackQuery.id, "Error clearing cart")
+                            try {
+                                execute(EditMessageText().apply {
+                                    setChatId(chatId.toString())
+                                    setMessageId(messageId)
+                                    text = localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId) // Or a specific cart error key
+                                    replyMarkup = null
+                                })
+                            } catch (editEx: TelegramApiException) {
+                                logger.error("Failed to edit message on cart clear error: ${editEx.message}")
+                            }
+                        }
+                    }
+
+                    "show_orders" -> {
+                        try {
+                            execute(EditMessageText().apply {
+                                setChatId(chatId.toString())
+                                setMessageId(messageId)
+                                text = localizedMessageService.getMessage(MessageKey.RETURNING_TO_ORDERS, chatId)
+                                replyMarkup = null
+                            })
+                        } catch (e: TelegramApiException) {
+                            logger.warn("Failed to edit message for show_orders callback: ${e.message}")
+                        }
+                        showUserOrders(chatId)
+                        answerCallbackQuery(callbackQuery.id)
+                    }
+
+                    "confirm_delete_data" -> {
+                        try {
+                            logger.info("User $chatId confirmed data deletion.")
+                            // userRepository.deleteByTelegramChatId(chatId) // Example deletion
+
+                            execute(EditMessageText().apply {
+                                setChatId(chatId.toString())
+                                setMessageId(messageId)
+                                text = "Your data has been deleted."
+                                replyMarkup = null
+                            })
+                            setState(chatId, BotState.START)
+                            answerCallbackQuery(callbackQuery.id, "Data deleted.")
+                        } catch (e: Exception) {
+                            logger.error("Error deleting user data for chat $chatId: ${e.message}", e)
+                            answerCallbackQuery(callbackQuery.id, "Error deleting data.")
+                        }
+                    }
+
+                    else -> {
+                        logger.warn("Unhandled callback data without colon: $data")
+                        answerCallbackQuery(callbackQuery.id, "Unknown action")
                     }
                 }
             }
         } catch (e: Exception) {
-            logger.error("Error handling callback query: ${e.message}", e)
-            sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+            logger.error("Error handling callback query '$data' for chat $chatId: ${e.message}", e)
+            try {
+                answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+            } catch (ignore: Exception) {
+                logger.debug(ignore.message)
+            }
         }
     }
 
@@ -284,28 +449,13 @@ class TelegramBot(
         }
     }
 
-    private fun handleAddressSelection(callbackQuery: CallbackQuery) {
-        val chatId = callbackQuery.message?.chatId ?: return
-        val data = callbackQuery.data
-
-        if (data.startsWith("select_address:")) {
-            val addressId = data.substringAfter("select_address:").toLong()
-            orderManager.setAddressId(chatId, addressId)
-            sendLocalizedMessage(MessageKey.ADDRESS_SELECTED, chatId)
-            setState(chatId, BotState.REGISTERED)
-            showMainMenu(chatId)
-        } else if (data == "add_address") {
-            setState(chatId, BotState.AWAITING_ADDRESS)
-            enterAddress(chatId)
-        }
-    }
-
     private fun handleAddressRequest(chatId: Long) {
         val userDetails = stateManager.getUser(chatId)
 
         val existingAddresses = try {
             addressService.getUserAddresses(userDetails?.id!!)
         } catch (e: Exception) {
+            logger.warn(e.message)
             emptyList()
         }
 
@@ -340,34 +490,28 @@ class TelegramBot(
                 handleStartCommand(chatId)
                 return
             }
-
             "/help" -> {
                 sendLocalizedMessage(HELP_TEXT_KEY, chatId)
                 return
             }
-
-            "/settings" -> {
-                if (currentState == BotState.REGISTERED) {
-                    showSettingsMenu(chatId)
-                } else {
-                    sendLocalizedMessage(
-                        MessageKey.ERROR_COMMAND_UNAVAILABLE,
-                        chatId,
-                        text
-                    )
-                }
-                return
-            }
-
             "/menu" -> {
-                if (currentState == BotState.REGISTERED) {
+                if (userRepository.findByTelegramChatId(chatId)?.phoneNumber?.isNotBlank() == true) {
+                    setState(chatId, BotState.REGISTERED)
+                    setMenuState(chatId, MenuStates.MAIN_MENU)
                     showMainMenu(chatId)
                 } else {
                     sendLocalizedMessage(MessageKey.ERROR_COMMAND_UNAVAILABLE, chatId, text)
                 }
                 return
             }
-
+            "/settings" -> {
+                if (currentState == BotState.REGISTERED) {
+                    showSettingsMenu(chatId)
+                } else {
+                    sendLocalizedMessage(MessageKey.ERROR_COMMAND_UNAVAILABLE, chatId, text)
+                }
+                return
+            }
             "/deletedata" -> {
                 if (currentState == BotState.REGISTERED) {
                     promptForDataDeletion(chatId)
@@ -378,64 +522,112 @@ class TelegramBot(
             }
         }
 
-        if (currentState == BotState.REGISTERED || currentState.name.startsWith("MENU_")) {
+        if (currentState == BotState.REGISTERED) {
             val menuButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_MENU, chatId)
             val cartButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_CART, chatId)
             val addressesButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_MY_ADDRESSES, chatId)
             val settingsButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_SETTINGS, chatId)
             val returnButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
-            val myOrdersButton = localizedMessageService.getMessage(MessageKey.MY_ORDERS, chatId)
+            val myOrdersButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_MY_ORDERS, chatId)
+            val addToCartButtonText = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)
+
+            val currentMenuState = getCurrentMenuState(chatId)
+
+            if (currentMenuState == MenuStates.QUANTITY_SELECTOR) {
+                when (text) {
+                    addToCartButtonText -> {
+                        val productIdStr = getTemporaryData(chatId, "current_product_id")
+                        val quantityStr = getTemporaryData(chatId, "current_quantity")
+                        val productMsgId = getTemporaryData(chatId, "product_message_id")?.toIntOrNull()
+
+                        if (productIdStr != null && quantityStr != null) {
+                            val productId = productIdStr.toLong()
+                            val quantity = quantityStr.toInt()
+
+                            // Use our new function without messageId
+                            handleAddToCartAndGoToCheckout(chatId, productId, quantity, productMsgId)
+                        } else {
+                            logger.error("Missing product/quantity data for reply 'Add to Cart' in chat $chatId")
+                            sendLocalizedMessage(MessageKey.ERROR_GENERIC, chatId)
+                        }
+                        return
+                    }
+                    returnButtonText -> {
+                        handleReturnAction(chatId)
+                        return
+                    }
+                }
+            }
+            else if (currentMenuState == MenuStates.ADDRESS_SELECTION) {
+                if (text == returnButtonText) {
+                    handleReturnAction(chatId)
+                    return // Handled
+                }
+            }
 
             when (text) {
                 menuButtonText -> {
+                    setMenuState(chatId, MenuStates.CATEGORY_VIEW)
                     showCategoriesMenu(chatId)
                 }
-
                 cartButtonText -> {
-                    showCart(chatId)
+                    handleViewCart(chatId)
                 }
-
                 addressesButtonText -> {
+                    setMenuState(chatId, MenuStates.ADDRESSES_VIEW)
                     showAddresses(chatId)
                 }
-
                 settingsButtonText -> {
+                    setMenuState(chatId, MenuStates.SETTINGS_VIEW)
                     showSettingsMenu(chatId)
                 }
-
-                returnButtonText -> {
-                    handleReturnAction(chatId)
+                myOrdersButtonText -> {
+                    showUserOrders(chatId)
                 }
-
+                returnButtonText -> {
+                    if (currentMenuState != MenuStates.QUANTITY_SELECTOR && currentMenuState != MenuStates.ADDRESS_SELECTION) {
+                        handleReturnAction(chatId)
+                    }
+                }
                 else -> {
                     val currentMenuState = getCurrentMenuState(chatId)
-
                     if (currentMenuState == MenuStates.CATEGORY_VIEW) {
                         val categoryId = findCategoryIdByName(chatId, text)
                         if (categoryId != null) {
+                            setMenuState(chatId, MenuStates.PRODUCT_VIEW)
                             showProductMenu(chatId, categoryId)
                         } else {
                             sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
                         }
-                    } else if (currentMenuState == MenuStates.PRODUCT_VIEW) {
+                    }
+                     else if (currentMenuState == MenuStates.PRODUCT_VIEW) {
                         val productId = findProductIdByName(chatId, text)
-                        if (productId != null) {
-                            showProductDetailsOrAddToCart(chatId, productId)
+                        if (productId != null){
+                            showProductDetails(chatId, productId)
                         } else {
                             sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
                         }
-                    } else {
-                        sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
+                     }
+                    else if (currentMenuState != MenuStates.ADDRESS_SELECTION || text != returnButtonText) {
+                        val knownButtons = listOf(menuButtonText, cartButtonText, addressesButtonText, settingsButtonText, myOrdersButtonText, returnButtonText, addToCartButtonText)
+                        if (!knownButtons.contains(text)) {
+                            sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
+                        }
                     }
+                    else {
+                        val knownButtons = listOf(menuButtonText, cartButtonText, addressesButtonText, settingsButtonText, myOrdersButtonText, returnButtonText, addToCartButtonText)
+                        if (!knownButtons.contains(text)) {
+                            sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
+                        }
+                    }
+
                 }
             }
         } else {
             when (currentState) {
                 BotState.AWAITING_LANGUAGE -> sendLocalizedMessage(MessageKey.ERROR_SELECT_LANGUAGE_FIRST, chatId)
                 BotState.AWAITING_PHONE -> sendLocalizedMessage(MessageKey.ERROR_SHARE_CONTACT_FIRST, chatId)
-                BotState.AWAITING_OTP -> sendLocalizedMessage(MessageKey.ERROR_ENTER_OTP_FIRST, chatId)
                 BotState.AWAITING_ADDRESS -> sendLocalizedMessage(MessageKey.ERROR_SHARE_LOCATION_FIRST, chatId)
-                BotState.PRODUCT_DETAIL_VIEW -> sendLocalizedMessage(MessageKey.ERROR_SELECT_PRODUCT_FIRST, chatId)
                 else -> sendLocalizedMessage(MessageKey.UNKNOWN_COMMAND, chatId, text)
             }
         }
@@ -445,21 +637,16 @@ class TelegramBot(
         try {
             val existingUser = userRepository.findByTelegramChatId(chatId)
 
-            // Check if user is fully registered
             if (existingUser != null && existingUser.phoneNumber.isNotBlank()) {
-                // User is registered - welcome them back and show main menu
                 stateManager.setTemporaryData(chatId, "phone_verified", "true")
                 setState(chatId, BotState.REGISTERED)
 
-                // Send welcome back message
                 sendLocalizedMessage(MessageKey.WELCOME_BACK, chatId, existingUser.username)
 
-                // Show main menu
                 showMainMenu(chatId)
                 return
             }
 
-            // Otherwise clear data and start registration process
             clearTemporaryData(chatId)
 
             if (existingUser != null) {
@@ -704,7 +891,7 @@ class TelegramBot(
         }
     }
 
-    private fun saveUserAddress(chatId: Long, latitude: Double, longitude: Double, addressDetails: String) {
+    private fun saveUserAddress(chatId: Long, latitude: Double, longitude: Double) {
         val user = userRepository.findByTelegramChatId(chatId)
         if (user == null) {
             sendLocalizedMessage(MessageKey.ERROR_AUTH_REQUIRED, chatId)
@@ -714,9 +901,10 @@ class TelegramBot(
         }
 
         try {
-            val parts = addressDetails.split(",")
-            val addressLine = parts[0].trim()
-            val city = if (parts.size > 1) parts[1].trim() else "Unknown"
+            val geocodingResult = geocodingService.getAddressFromCoordinates(latitude, longitude)
+
+            val addressLine = geocodingResult?.street ?: geocodingResult?.fullAddress ?: "Lat: $latitude, Lon: $longitude"
+            val city = geocodingResult?.city ?: "Unknown City"
 
             val addressRequest = AddressRequest(
                 addressLine = addressLine,
@@ -735,18 +923,20 @@ class TelegramBot(
 
             addressRepository.save(address)
 
-            sendLocalizedMessage(MessageKey.ADDRESS_SAVED, chatId)
+            sendLocalizedMessage(MessageKey.ADDRESS_SAVED_DETAILS, chatId, address.addressLine, address.city)
             setState(chatId, BotState.REGISTERED)
             showMainMenu(chatId)
         } catch (e: Exception) {
-            logger.error("Failed to save address: ${e.message}", e)
+            logger.error("Failed to save address after geocoding: ${e.message}", e)
             sendLocalizedMessage(MessageKey.ERROR_ADDRESS_SAVE_FAILED, chatId)
-            enterAddress(chatId)
+            setState(chatId, BotState.REGISTERED)
+            showMainMenu(chatId)
         }
     }
 
     private fun showMainMenu(chatId: Long) {
         setState(chatId, BotState.REGISTERED)
+        setMenuState(chatId, MenuStates.MAIN_MENU)
 
         val message = SendMessage()
         message.chatId = chatId.toString()
@@ -759,7 +949,10 @@ class TelegramBot(
                     add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_CART, chatId)))
                 },
                 KeyboardRow().apply {
+                    add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_MY_ORDERS, chatId)))
                     add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_MY_ADDRESSES, chatId)))
+                },
+                KeyboardRow().apply {
                     add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_SETTINGS, chatId)))
                 }
             )
@@ -814,181 +1007,289 @@ class TelegramBot(
     }
 
     private fun showProductMenu(chatId: Long, categoryId: Long) {
-        setPreviousState(chatId, getCurrentState(chatId))
-        setMenuState(chatId, MenuStates.PRODUCT_VIEW)
+        setTemporaryData(chatId, "current_category_id", categoryId.toString())
 
-        val message = SendMessage()
-        message.chatId = chatId.toString()
+        val markup = ReplyKeyboardMarkup()
+        val keyboard = ArrayList<KeyboardRow>()
+        val allProducts = productService.getProductsByCategoryId(categoryId)
+        val locale = getUserLocale(chatId)
+        var currentRow = KeyboardRow()
 
-        val markup = InlineKeyboardMarkup()
-        val keyboardRows = mutableListOf<List<InlineKeyboardButton>>()
-        val products = productService.getProductsByCategoryId(categoryId)
+        allProducts.forEachIndexed { index, product ->
+            val buttonText = when(locale) {
+                "uz" -> product.nameUz
+                "ru" -> product.nameRu
+                else -> product.name
+            }
 
-        if (products.isEmpty()) {
-            message.text = localizedMessageService.getMessage(MessageKey.PRODUCT_NONE_IN_CATEGORY, chatId)
-        } else {
-            message.text = localizedMessageService.getMessage(MessageKey.PRODUCT_CHOOSE, chatId)
+            if (buttonText.isNotBlank()){
+                currentRow.add(KeyboardButton(buttonText))
+            }
 
-            var currentRow = mutableListOf<InlineKeyboardButton>()
-            products.forEachIndexed { index, product ->
-                val localizedProductName = getLocalizedProductName(product.toDto(), chatId)
-
-                val productButton = InlineKeyboardButton(localizedProductName)
-                productButton.callbackData = "product:${product.id}"
-
-
-                currentRow.add(productButton)
-
-                if (index % 2 == 1 || index == products.size - 1) {
-                    keyboardRows.add(currentRow)
-                    if (index != products.size - 1) {
-                        currentRow = mutableListOf()
-                    }
-                }
+            if (index % 2 == 1 || index == allProducts.size - 1){
+                keyboard.add(currentRow)
+                currentRow = KeyboardRow()
             }
         }
 
-        val returnButton = InlineKeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId))
-        returnButton.callbackData = "main_menu"
-        keyboardRows.add(listOf(returnButton))
+        val backRow = KeyboardRow()
+        backRow.add(KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)))
+        keyboard.add(backRow)
 
-        markup.keyboard = keyboardRows
-        message.replyMarkup = markup
-        sendMessage(chatId, message)
+        markup.keyboard = keyboard
+        markup.resizeKeyboard = true
+
+        sendMessage(chatId, SendMessage().apply {
+            text = localizedMessageService.getMessage(MessageKey.PRODUCT_CHOOSE, chatId)
+            replyMarkup = markup
+        })
     }
 
-    private fun handleProductSelection(chatId: Long, productId: Long) {
-        val product = productService.getProductById(productId) ?: run {
-            sendMessage(chatId, localizedMessageService.getMessage(MessageKey.ERROR_PRODUCT_NOT_FOUND, chatId))
-            return
+    private fun showProductDetails(chatId: Long, productId: Long, callbackQueryId: String? = null) {
+        try {
+            // If we have a callback query ID, show loading notification
+            callbackQueryId?.let {
+                answerCallbackQuery(it, localizedMessageService.getMessage(MessageKey.LOADING, chatId))
+            }
+
+            // 1) fetch & guard
+            val product = productService.getProductById(productId)
+            if (product == null) {
+                sendLocalizedMessage(MessageKey.ERROR_PRODUCT_NOT_FOUND, chatId)
+                // go back to list
+                getTemporaryData(chatId, "current_category_id")?.toLongOrNull()?.let {
+                    setMenuState(chatId, MenuStates.PRODUCT_VIEW)
+                    showProductMenu(chatId, it)
+                } ?: run {
+                    setMenuState(chatId, MenuStates.CATEGORY_VIEW)
+                    showCategoriesMenu(chatId)
+                }
+                return
+            }
+
+            val categoryId = getTemporaryData(chatId, "current_category_id")?.toLongOrNull() ?: 0L
+
+            // Store current product and initial quantity
+            setTemporaryData(chatId, "current_product_id", productId.toString())
+            setTemporaryData(chatId, "current_quantity", "1")
+
+            // Build product info
+            val currentQty = 1
+            val title = getLocalizedProductName(product, chatId)
+            val description = product.description?.takeIf { it.isNotBlank() }?.let { "\n\n$it" } ?: ""
+            val text = buildString {
+                append(title)
+                append("\n")
+                append(localizedMessageService.getMessage(MessageKey.PRICE, chatId))
+                append(": ")
+                append("${product.price.times(currentQty.toBigDecimal())}")
+                append(" ")
+                append(product.currency)
+                append(description)
+            }
+
+            // Create inline keyboard for quantity
+            val inlineKb = InlineKeyboardMarkup().apply {
+                keyboard = listOf(
+                    listOf(
+                        InlineKeyboardButton("➖").apply {
+                            callbackData = "decrease_quantity:$productId:$currentQty:$categoryId"
+                        },
+                        InlineKeyboardButton(currentQty.toString()).apply {
+                            callbackData = "quantity_info"
+                        },
+                        InlineKeyboardButton("➕").apply {
+                            callbackData = "increase_quantity:$productId:$currentQty:$categoryId"
+                        }
+                    ),
+                    listOf(
+                        InlineKeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)).apply {
+                            callbackData = "add_to_cart:$productId:$currentQty"
+                        }
+                    )
+                )
+            }
+
+            // First send main message with inline keyboard but WITHOUT reply keyboard
+            var productMessageId: Int? = null
+            val hasPhoto = product.image != null &&
+                    (product.image.startsWith("http://") || product.image.startsWith("https://"))
+
+            if (hasPhoto) {
+                try {
+                    val photoMsg = execute(SendPhoto().apply {
+                        setChatId(chatId)
+                        photo = InputFile(product.image)
+                        caption = text
+                        replyMarkup = inlineKb
+                    })
+                    productMessageId = photoMsg.messageId
+                    setTemporaryData(chatId, "product_message_id", productMessageId.toString())
+                    setTemporaryData(chatId, "product_has_photo", "true")
+                } catch (e: Exception) {
+                    logger.error("Failed to send product image, falling back to text: ${e.message}", e)
+                    // Fallback to regular text message if image fails
+                    val textMsg = execute(SendMessage().apply {
+                        this.chatId = chatId.toString()
+                        this.text = text
+                        this.replyMarkup = inlineKb
+                    })
+                    productMessageId = textMsg.messageId
+                    setTemporaryData(chatId, "product_message_id", productMessageId.toString())
+                    setTemporaryData(chatId, "product_has_photo", "false")
+                }
+            } else {
+                // No valid image, send text only
+                val textMsg = execute(SendMessage().apply {
+                    this.chatId = chatId.toString()
+                    this.text = text
+                    this.replyMarkup = inlineKb
+                })
+                productMessageId = textMsg.messageId
+                setTemporaryData(chatId, "product_message_id", productMessageId.toString())
+                setTemporaryData(chatId, "product_has_photo", "false")
+            }
+
+            // Update the reply keyboard separately with a visible message
+            val actionKb = ReplyKeyboardMarkup().apply {
+                keyboard = listOf(
+                    KeyboardRow(listOf(
+                        KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)),
+                        KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId))
+                    ))
+                )
+                resizeKeyboard = true
+                oneTimeKeyboard = false
+            }
+
+            // Send a message with actual text to update the keyboard
+            val actionMsg = execute(SendMessage().apply {
+                this.chatId = chatId.toString()
+                this.text = localizedMessageService.getMessage(MessageKey.PRODUCT_ACTION_PROMPT, chatId)
+                this.replyMarkup = actionKb
+            })
+
+            setTemporaryData(chatId, "action_message_id", actionMsg.messageId.toString())
+
+            // Update state
+            setMenuState(chatId, MenuStates.QUANTITY_SELECTOR)
+        } catch (e: Exception) {
+            logger.error("Error in showProductDetails: ${e.message}", e)
+            sendLocalizedMessage(MessageKey.ERROR_GENERIC, chatId)
         }
-
-        showProductQuantitySelector(chatId, productId, product)
-    }
-
-    private fun showProductQuantitySelector(chatId: Long, productId: Long, product: ProductDTO) {
-        val markup = InlineKeyboardMarkup()
-        markup.keyboard = listOf(
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = "➖"
-                    callbackData = "decrease_quantity:$productId:1"
-                },
-                InlineKeyboardButton().apply {
-                    text = "1"
-                    callbackData = "quantity_info"
-                },
-                InlineKeyboardButton().apply {
-                    text = "➕"
-                    callbackData = "increase_quantity:$productId:1"
-                }
-            ),
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)
-                    callbackData = "add_to_cart:$productId:1"
-                }
-            ),
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
-                    callbackData = "back_to_products"
-                }
-            )
-        )
-
-        val productName = getLocalizedProductName(product, chatId)
-        val message = SendMessage()
-        message.chatId = chatId.toString()
-        message.text = "$productName\nPrice: ${product.price} UZS\nQuantity: 1"
-        message.replyMarkup = markup
-
-        execute(message)
     }
 
     private fun handleQuantityAdjustment(callbackQuery: CallbackQuery) {
         val chatId = callbackQuery.message?.chatId ?: return
         val messageId = callbackQuery.message?.messageId ?: return
-        
-        val parts = callbackQuery.data.split(":")
+        val data = callbackQuery.data ?: return
+        val parts = data.split(":")
         val action = parts[0]
         val productId = parts[1].toLong()
         var currentQuantity = parts[2].toInt()
+        val categoryId = parts.getOrNull(3)?.toLong() ?: getTemporaryData(chatId, "current_category_id")?.toLongOrNull() ?: 0L
 
         when (action) {
-            "increase_quantity" -> {
-                currentQuantity++
-            }
+            "increase_quantity" -> currentQuantity++
             "decrease_quantity" -> {
-                if (currentQuantity > 1) {
-                    currentQuantity--
+                if (currentQuantity > 1) currentQuantity--
+                else {
+                    answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.INVALID_QUANTITY, chatId))
+                    return
                 }
             }
             "add_to_cart" -> {
                 try {
-                    cartService.addItemToCart(chatId, productId, currentQuantity)
-                    val confirmationText = localizedMessageService.getMessage(MessageKey.CART_ADDED_ITEMS, chatId, currentQuantity)
-                    execute(EditMessageText().apply {
-                        setChatId(chatId.toString())
-                        setMessageId(messageId)
-                        text = confirmationText
-                        replyMarkup = null
-                    })
-                    handleViewCart(chatId)
+                    val quantityToAdd = parts[2].toInt()
+                    // Pass both messageId and callbackQueryId to handleAddToCartAndGoToCheckout
+                    handleAddToCartAndGoToCheckout(chatId, productId, quantityToAdd, messageId, callbackQuery.id)
+                    return
                 } catch (e: Exception) {
-                    logger.error("Error adding item to cart or editing message: ${e.message}", e)
-                    sendLocalizedMessage(MessageKey.ERROR_CART_ADD_FAILED, chatId)
+                    logger.error("Error adding item to cart via inline button: ${e.message}", e)
+                    answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_CART_ADD_FAILED, chatId))
+                    return
                 }
-                return
             }
         }
 
-        val product = productService.getProductById(productId) ?: return
+        if (action == "increase_quantity" || action == "decrease_quantity") {
+            setTemporaryData(chatId, "current_quantity", currentQuantity.toString())
 
-        val messageText = "Product: ${product.name}\nPrice: ${product.price} ${product.currency}\nQuantity: $currentQuantity"
+            val prod = productService.getProductById(productId) ?: return
+            val title = getLocalizedProductName(prod, chatId)
+            val text = "$title\n${localizedMessageService.getMessage(MessageKey.PRICE, chatId)}: ${prod.price} ${prod.currency}"
 
-        val markup = InlineKeyboardMarkup()
-        markup.keyboard = listOf(
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = "➖"
-                    callbackData = "decrease_quantity:$productId:$currentQuantity"
-                },
-                InlineKeyboardButton().apply {
-                    text = currentQuantity.toString()
-                    callbackData = "quantity_info"
-                },
-                InlineKeyboardButton().apply {
-                    text = "➕"
-                    callbackData = "increase_quantity:$productId:$currentQuantity"
-                }
-            ),
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)
-                    callbackData = "add_to_cart:$productId:$currentQuantity"
-                }
-            ),
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
-                    callbackData = "back_to_products"
-                }
-            )
-        )
+            val addToCartText = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)
 
-        try {
-            execute(EditMessageText().apply {
-                setChatId(chatId)
-                setMessageId(messageId)
-                text = messageText
-                replyMarkup = markup
-            })
-        } catch (e: TelegramApiException) {
-            logger.error("Error updating message: ${e.message}", e)
+            val inline = InlineKeyboardMarkup().apply {
+                keyboard = listOf(
+                    listOf(
+                        InlineKeyboardButton().apply {
+                            this.text = "➖"
+                            callbackData = "decrease_quantity:$productId:$currentQuantity:$categoryId"
+                        },
+                        InlineKeyboardButton().apply {
+                            this.text = currentQuantity.toString()
+                            callbackData = "quantity_info"
+                        },
+                        InlineKeyboardButton().apply {
+                            this.text = "➕"
+                            callbackData = "increase_quantity:$productId:$currentQuantity:$categoryId"
+                        }
+                    ),
+                    listOf(
+                        InlineKeyboardButton().apply {
+                            this.text = addToCartText
+                            callbackData = "add_to_cart:$productId:$currentQuantity"
+                        }
+                    )
+                )
+            }
+
+            try {
+                // Check if the message has a photo (meaning it's a photo message)
+                val hasPhoto = callbackQuery.message?.photo != null ||
+                        (callbackQuery.message?.caption != null && callbackQuery.message?.text == null)
+
+                if (hasPhoto) {
+                    // For photo messages, update the caption
+                    execute(EditMessageCaption().apply {
+                        setChatId(chatId.toString())
+                        setMessageId(messageId)
+                        caption = text
+                        replyMarkup = inline
+                    })
+                } else {
+                    // For text messages, update the text
+                    execute(EditMessageText().apply {
+                        setChatId(chatId.toString())
+                        setMessageId(messageId)
+                        setText(text)
+                        replyMarkup = inline
+                    })
+                }
+                answerCallbackQuery(callbackQuery.id)
+            } catch (e: TelegramApiException) {
+                logger.error("Failed to edit message for quantity adjustment: ${e.message}")
+                answerCallbackQuery(callbackQuery.id, localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId))
+            }
+            return
         }
     }
-    
+
+
+    private fun answerCallbackQuery(callbackQueryId: String, text: String? = null) {
+        val answer = AnswerCallbackQuery().apply {
+            setCallbackQueryId(callbackQueryId)
+            setText(text)
+        }
+        try {
+            execute(answer)
+        } catch (e: TelegramApiException) {
+            logger.warn("Failed to answer callback query $callbackQueryId: ${e.message}")
+        }
+    }
+
     private fun handleViewCart(chatId: Long) {
         try {
             val cart = cartService.getCart(chatId)
@@ -1026,6 +1327,12 @@ class TelegramBot(
                 InlineKeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_CONTINUE_SHOPPING, chatId))
             continueButton.callbackData = "main_menu"
 
+            keyboardRows.add(listOf(
+                InlineKeyboardButton().apply {
+                    text = "🗑 ${localizedMessageService.getMessage(MessageKey.CLEAR_CART, chatId)}"
+                    callbackData = "clear_cart"
+                }
+            ))
             keyboardRows.add(listOf(checkoutButton))
             keyboardRows.add(listOf(continueButton))
 
@@ -1063,6 +1370,10 @@ class TelegramBot(
                 return
             }
 
+            // Update menu state first
+            setMenuState(chatId, MenuStates.ADDRESS_SELECTION)
+
+            // Send a single message with both inline keyboard and updated reply keyboard
             val message = SendMessage()
             message.chatId = chatId.toString()
             message.text = localizedMessageService.getMessage(MessageKey.CHECKOUT_SELECT_ADDRESS, chatId)
@@ -1084,14 +1395,105 @@ class TelegramBot(
             }
             keyboardRows.add(listOf(addNewAddressButton))
 
+            val lastViewedProductId = getTemporaryData(chatId, "current_product_id")
+            if (lastViewedProductId != null) {
+                keyboardRows.add(listOf(
+                    InlineKeyboardButton().apply {
+                        text = "🔙 ${localizedMessageService.getMessage(MessageKey.BUTTON_RETURN_TO_PRODUCT, chatId)}"
+                        callbackData = "back_to_product"
+                    }
+                ))
+            }
+
             markup.keyboard = keyboardRows
             message.replyMarkup = markup
 
-            sendMessage(chatId, message)
+            // Send address selection message with inline keyboard
+            val addressMsg = execute(message)
+            setTemporaryData(chatId, "address_message_id", addressMsg.messageId.toString())
+
+            // Update reply keyboard to only show return button in a separate message
+            val returnKeyboard = ReplyKeyboardMarkup().apply {
+                keyboard = listOf(
+                    KeyboardRow(listOf(
+                        KeyboardButton(localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId))
+                    ))
+                )
+                resizeKeyboard = true
+            }
+
+            execute(SendMessage().apply {
+                this.chatId = chatId.toString()
+                this.text = "⌨\uFE0F"  // Zero-width space - won't be visible to user
+                this.replyMarkup = returnKeyboard
+            })
+
             setState(chatId, BotState.AWAITING_ADDRESS_SELECTION)
         } catch (e: Exception) {
             logger.error("Error during checkout: ${e.message}", e)
             sendLocalizedMessage(MessageKey.ERROR_CHECKOUT, chatId)
+        }
+    }
+
+    private fun handleAddToCartAndGoToCheckout(chatId: Long, productId: Long, quantity: Int, messageId: Int? = null, callbackQueryId: String? = null) {
+        try {
+            // 1. Add item to cart
+            cartService.addItemToCart(chatId, productId, quantity)
+            val product = productService.getProductById(productId)
+            val productName = if (product != null) getLocalizedProductName(product, chatId) else "Product"
+
+            val successMessage = localizedMessageService.getMessage(MessageKey.ADDED_TO_CART, chatId, quantity, productName)
+
+            // 2. Show notification via callback query if available
+            callbackQueryId?.let {
+                answerCallbackQuery(it, "${successMessage}\n${localizedMessageService.getMessage(MessageKey.REDIRECTING_TO_CHECKOUT, chatId)}")
+            }
+
+            // 3. Get stored message IDs
+            val storedProductMsgId = getTemporaryData(chatId, "product_message_id")?.toIntOrNull()
+            val storedActionMsgId = getTemporaryData(chatId, "action_message_id")?.toIntOrNull()
+
+            // Determine the product message ID to delete
+            val productMessageIdToDelete = messageId ?: storedProductMsgId
+
+            // 4. Delete the product message (photo or text)
+            if (productMessageIdToDelete != null) {
+                try {
+                    execute(DeleteMessage(chatId.toString(), productMessageIdToDelete))
+                } catch (e: Exception) {
+                    logger.warn("Failed to delete product message (ID: $productMessageIdToDelete): ${e.message}")
+                    // Continue even if deletion fails
+                }
+            }
+
+            // 5. Delete the action prompt message (reply keyboard message) if it exists and is different
+            if (storedActionMsgId != null && storedActionMsgId != productMessageIdToDelete) {
+                try {
+                    execute(DeleteMessage(chatId.toString(), storedActionMsgId))
+                } catch (e: Exception) {
+                    logger.warn("Failed to delete action message (ID: $storedActionMsgId): ${e.message}")
+                    // Continue even if deletion fails
+                }
+            }
+
+            // 6. Clear temporary message IDs from state
+            stateManager.clearTemporaryData(chatId, "product_message_id")
+            stateManager.clearTemporaryData(chatId, "action_message_id")
+            stateManager.clearTemporaryData(chatId, "product_has_photo")
+
+
+            // 7. Proceed to checkout - this will now send fresh messages for address selection
+            handleCheckout(chatId)
+
+        } catch (e: Exception) {
+            logger.error("Error adding to cart and checking out: ${e.message}", e)
+
+            // Handle error differently based on how we were called
+            callbackQueryId?.let {
+                answerCallbackQuery(it, localizedMessageService.getMessage(MessageKey.ERROR_CART_ADD_FAILED, chatId))
+            } ?: run {
+                sendLocalizedMessage(MessageKey.ERROR_CART_ADD_FAILED, chatId)
+            }
         }
     }
 
@@ -1106,25 +1508,71 @@ class TelegramBot(
     }
 
     private fun handleReturnAction(chatId: Long) {
-        val menuState = getCurrentMenuState(chatId)
+        val currentMenuState = getCurrentMenuState(chatId)
 
-        when (menuState) {
+        stateManager.clearTemporaryData(chatId, "current_quantity")
+
+        when (currentMenuState) {
+            MenuStates.QUANTITY_SELECTOR -> {
+                val categoryIdStr = getTemporaryData(chatId, "current_category_id")
+                if (categoryIdStr != null) {
+                    val categoryId = categoryIdStr.toLong()
+                    setMenuState(chatId, MenuStates.PRODUCT_VIEW)
+                    setState(chatId, BotState.REGISTERED)
+                    showProductMenu(chatId, categoryId)
+                } else {
+                    logger.warn("Category ID not found when returning from QUANTITY_SELECTOR for chat $chatId. Returning to categories.")
+                    setMenuState(chatId, MenuStates.CATEGORY_VIEW)
+                    setState(chatId, BotState.REGISTERED)
+                    showCategoriesMenu(chatId)
+                }
+                // Don't clear current_product_id until after using it
+                stateManager.clearTemporaryData(chatId, "current_product_id")
+            }
             MenuStates.PRODUCT_VIEW -> {
                 setMenuState(chatId, MenuStates.CATEGORY_VIEW)
+                setState(chatId, BotState.REGISTERED)
                 showCategoriesMenu(chatId)
+                stateManager.clearTemporaryData(chatId, "current_category_id")
             }
-
+            MenuStates.ADDRESS_SELECTION -> {
+                // Return from address selection to product details
+                val productIdStr = getTemporaryData(chatId, "current_product_id")
+                if (productIdStr != null) {
+                    val productId = productIdStr.toLong()
+                    setMenuState(chatId, MenuStates.QUANTITY_SELECTOR)
+                    setState(chatId, BotState.REGISTERED)
+                    showProductDetails(chatId, productId)
+                } else {
+                    // Fallback to categories if product ID is missing
+                    setMenuState(chatId, MenuStates.CATEGORY_VIEW)
+                    setState(chatId, BotState.REGISTERED)
+                    showCategoriesMenu(chatId)
+                }
+            }
             MenuStates.CATEGORY_VIEW -> {
                 setMenuState(chatId, MenuStates.MAIN_MENU)
+                setState(chatId, BotState.REGISTERED)
                 showMainMenu(chatId)
             }
-
-            else -> {
+            MenuStates.SETTINGS_VIEW, MenuStates.ADDRESSES_VIEW -> {
+                setMenuState(chatId, MenuStates.MAIN_MENU)
+                setState(chatId, BotState.REGISTERED)
                 showMainMenu(chatId)
+            }
+            MenuStates.PRODUCT_DETAIL_VIEW -> {
+                setMenuState(chatId, MenuStates.PRODUCT_VIEW)
+                setState(chatId, BotState.REGISTERED)
+                showMainMenu(chatId)
+            }
+            else -> {
+                logger.warn("Unhandled return from menu state: $currentMenuState for chat $chatId. Defaulting to main menu.")
+                setMenuState(chatId, MenuStates.MAIN_MENU)
+                setState(chatId, BotState.REGISTERED)
+                showMainMenu(chatId)
+                stateManager.clearTemporaryData(chatId)
             }
         }
-
-        setPreviousState(chatId, BotState.REGISTERED)
     }
 
     private fun sendMessage(chatId: Long, text: String) {
@@ -1186,10 +1634,6 @@ class TelegramBot(
             text = localizedMessageService.getMessage(MessageKey.LANGUAGE_SELECT, chatId)
             replyMarkup = markup
         })
-    }
-
-    private fun showCart(chatId: Long) {
-        handleViewCart(chatId)
     }
 
     private fun showAddresses(chatId: Long) {
@@ -1266,48 +1710,13 @@ class TelegramBot(
         })
     }
 
-    private fun showProductDetailsOrAddToCart(chatId: Long, productId: Long) {
-        val product = productService.getProductById(productId) ?: run {
-            sendLocalizedMessage(MessageKey.ERROR_PRODUCT_NOT_FOUND, chatId)
-            return
-        }
-
-        val localizedName = getLocalizedProductName(product, chatId)
-        val messageBuilder = StringBuilder("*$localizedName*\n\n")
-
-        messageBuilder.append("${product.description}\n\n")
-        messageBuilder.append("*${localizedMessageService.getMessage(MessageKey.PRICE, chatId)}: ${product.price} UZS*")
-
-        val markup = InlineKeyboardMarkup()
-        markup.keyboard = listOf(
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage(MessageKey.BUTTON_ADD_TO_CART, chatId)
-                    callbackData = "add_to_cart:${product.id}:1"
-                }
-            ),
-            listOf(
-                InlineKeyboardButton().apply {
-                    text = localizedMessageService.getMessage(MessageKey.BUTTON_RETURN, chatId)
-                    callbackData = "back_to_products"
-                }
-            )
-        )
-
-        sendMessage(chatId, SendMessage().apply {
-            text = messageBuilder.toString()
-            enableMarkdown(true)
-            replyMarkup = markup
-        })
-    }
-
     private fun processOrderWithAddress(chatId: Long, addressId: Long) {
         orderManager.setAddressId(chatId, addressId)
         proceedToOrderConfirmation(chatId)
     }
 
     private fun showOrderConfirmation(chatId: Long, cart: CartDTO) {
-        val messageBuilder = StringBuilder("📋 *Order Summary*\n\n")
+        val messageBuilder = StringBuilder(localizedMessageService.getMessage(MessageKey.ORDERS_TITLE, chatId))
 
         var subtotal = BigDecimal.ZERO
         cart.items.forEach { item ->
@@ -1324,12 +1733,12 @@ class TelegramBot(
         val total = subtotal.add(serviceCharge).add(deliveryFee).subtract(discount)
 
         messageBuilder.apply {
-            append("\n*Subtotal:* $subtotal UZS")
-            append("\n*Service Fee (5%):* $serviceCharge UZS")
-            append("\n*Delivery Fee:* $deliveryFee UZS")
-            append("\n*Discount:* -$discount UZS")
-            append("\n\n*Total:* $total UZS")
-            append("\n\nPayment: Cash on Delivery")
+            append("\n${localizedMessageService.getMessage(MessageKey.SUBTOTAL, chatId)}: $subtotal UZS")
+            append("\n${localizedMessageService.getMessage(MessageKey.SERVICE_FEE, chatId)}: $serviceCharge UZS")
+            append("\n${localizedMessageService.getMessage(MessageKey.DELIVERY_FEE, chatId)}: $deliveryFee UZS")
+            append("\n${localizedMessageService.getMessage(MessageKey.DISCOUNT, chatId)}: -$discount UZS")
+            append("\n\n${localizedMessageService.getMessage(MessageKey.CART_TOTAL, chatId)}: $total UZS")
+            append("\n\n${localizedMessageService.getMessage(MessageKey.PAYMENT_METHOD, chatId)}: ${localizedMessageService.getMessage(MessageKey.CASH_ON_DELIVERY, chatId)}")
         }
 
         val markup = InlineKeyboardMarkup()
@@ -1355,7 +1764,7 @@ class TelegramBot(
 
     private fun handleOrderConfirmation(callbackQuery: CallbackQuery) {
         val chatId = callbackQuery.message?.chatId ?: return
-        val messageId = callbackQuery.message?.messageId ?: return // Get messageId
+        val messageId = callbackQuery.message?.messageId ?: return
 
         try {
             val cart = cartService.getCart(chatId)
@@ -1394,7 +1803,7 @@ class TelegramBot(
             )
 
             try {
-                val orderDto = orderService.createOrder(user.id!!, orderRequest)
+                orderService.createOrder(user.id!!, orderRequest)
                 val messageText = StringBuilder(localizedMessageService.getMessage(MessageKey.ORDER_CONFIRMED, chatId))
 
                 cartService.clearCart(chatId)
@@ -1422,8 +1831,170 @@ class TelegramBot(
                 setChatId(chatId.toString())
                 setMessageId(messageId)
                 text = localizedMessageService.getMessage(MessageKey.ERROR_GENERIC, chatId)
-                replyMarkup = null // Remove confirm/cancel buttons
+                replyMarkup = null
             })
+        }
+    }
+
+    private fun showUserOrders(chatId: Long) {
+        try {
+            val user = getCurrentUser(chatId) ?: run {
+                sendLocalizedMessage(MessageKey.ERROR_AUTH_REQUIRED, chatId)
+                return
+            }
+
+            val pageable = PageRequest.of(0, 10)
+            val orders = orderService.getCustomerOrders(user.id!!, pageable)
+
+            if (orders.isEmpty) {
+                sendLocalizedMessage(MessageKey.ORDERS_EMPTY, chatId)
+                return
+            }
+
+            val messageBuilder = StringBuilder(localizedMessageService.getMessage(MessageKey.ORDERS_TITLE, chatId))
+            messageBuilder.append("\n\n")
+
+            val markup = InlineKeyboardMarkup()
+            val keyboardRows = mutableListOf<List<InlineKeyboardButton>>()
+
+            orders.content.forEachIndexed { index, order ->
+                messageBuilder.apply {
+                    append("📋 *${localizedMessageService.getMessage(MessageKey.ORDER, chatId)} #${order.id}*\n")
+                    append("📅 ${order.orderDate}\n")
+                    append("💰 ${order.totalAmount} UZS\n")
+                    append("🚚 ${localizedStatusName(order.status, chatId)}\n\n")
+                }
+
+                val orderButton = InlineKeyboardButton().apply {
+                    text = "🔍 ${localizedMessageService.getMessage(MessageKey.VIEW_ORDER_DETAILS, chatId)} #${order.id}"
+                    callbackData = "view_order:${order.id}"
+                }
+                keyboardRows.add(listOf(orderButton))
+            }
+
+            keyboardRows.add(listOf(
+                InlineKeyboardButton().apply {
+                    text = "🏠 ${localizedMessageService.getMessage(MessageKey.BUTTON_MAIN_MENU, chatId)}"
+                    callbackData = "main_menu"
+                }
+            ))
+
+            markup.keyboard = keyboardRows
+
+            sendMessage(chatId, SendMessage().apply {
+                text = messageBuilder.toString()
+                enableMarkdown(true)
+                replyMarkup = markup
+            })
+
+        } catch (e: Exception) {
+            logger.error("Error showing user orders: ${e.message}", e)
+            sendLocalizedMessage(MessageKey.ERROR_ORDERS_FETCH_FAILED, chatId)
+        }
+    }
+
+    private fun localizedStatusName(status: OrderStatus, chatId: Long): String {
+        val key = when (status) {
+            OrderStatus.PENDING -> MessageKey.STATUS_PENDING
+            OrderStatus.IN_PROGRESS -> MessageKey.STATUS_IN_PROGRESS
+            OrderStatus.ACCEPTED -> MessageKey.STATUS_ACCEPTED
+            OrderStatus.COMPLETED -> MessageKey.STATUS_COMPLETED
+            OrderStatus.CANCELLED -> MessageKey.STATUS_CANCELLED
+            OrderStatus.REJECTED -> MessageKey.STATUS_REJECTED
+            OrderStatus.REFUNDED -> MessageKey.STATUS_REFUNDED
+            else -> MessageKey.STATUS_UNKNOWN
+        }
+
+        return localizedMessageService.getMessage(key, chatId)
+    }
+
+    private fun showOrderDetails(chatId: Long, orderId: Long, messageId: Int) {
+        try {
+            val order = orderService.getOrderById(orderId)
+            val addressInfo = getAddressDetails(order.addressId, chatId)
+
+            val messageBuilder = StringBuilder("*${localizedMessageService.getMessage(MessageKey.ORDER, chatId)} #${order.id}*\n\n")
+            messageBuilder.apply {
+                append("📅 ${order.orderDate}\n")
+                append("🚚 ${localizedStatusName(order.status, chatId)}\n")
+                append("💳 ${order.paymentOption}\n")
+                append("📍 $addressInfo\n\n")
+            }
+
+            messageBuilder.append("*${localizedMessageService.getMessage(MessageKey.ORDER_ITEMS, chatId)}:*\n")
+            order.orderItems.forEach { item ->
+                val product = productService.getProductById(item.productId!!)
+                val productName = getLocalizedProductName(product!!, chatId)
+                val itemTotal = item.price.multiply(BigDecimal(item.quantity))
+                messageBuilder.append("• $productName x ${item.quantity} = $itemTotal UZS\n")
+            }
+
+            messageBuilder.append("\n*${localizedMessageService.getMessage(MessageKey.TOTAL, chatId)}: ${order.totalAmount} UZS*")
+
+            val markup = InlineKeyboardMarkup()
+            markup.keyboard = listOf(
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = localizedMessageService.getMessage(MessageKey.BUTTON_BACK_TO_ORDERS, chatId)
+                        callbackData = "show_orders"
+                    }
+                ),
+                listOf(
+                    InlineKeyboardButton().apply {
+                        text = localizedMessageService.getMessage(MessageKey.BUTTON_MAIN_MENU, chatId)
+                        callbackData = "main_menu"
+                    }
+                )
+            )
+
+            execute(EditMessageText().apply {
+                setChatId(chatId.toString())
+                setMessageId(messageId)
+                text = messageBuilder.toString()
+                enableMarkdown(true)
+                replyMarkup = markup
+            })
+
+        } catch (e: Exception) {
+            logger.error("Error showing order details: ${e.message}", e)
+            execute(EditMessageText().apply {
+                setChatId(chatId.toString())
+                setMessageId(messageId)
+                text = localizedMessageService.getMessage(MessageKey.ERROR_ORDER_DETAILS_FAILED, chatId)
+                replyMarkup = null
+            })
+        }
+    }
+
+    private fun getAddressDetails(addressId: Long, chatId: Long): String {
+        try {
+            val user = userRepository.findByTelegramChatId(chatId)
+            if (user == null) {
+                logger.error("Cannot fetch address details: User not found for chat $chatId")
+                return "Address user not found"
+            }
+
+            val address = addressRepository.findByIdAndDeletedFalse(addressId)
+                ?: throw ResourceNotFoundException(addressId)
+
+            if (address.user?.id != user.id) {
+                logger.warn("User $chatId (ID: ${user.id}) attempted to access address $addressId owned by user ${address.user?.id}")
+                throw ForbiddenException() // Or return a generic error string
+            }
+
+            return "${address.addressLine}, ${address.city}"
+
+        } catch (e: ForbiddenException) {
+            logger.error("Forbidden access attempt for address $addressId by chat $chatId: ${e.message}")
+            return "Address access denied" // Or use localized message
+        }
+        catch (e: ResourceNotFoundException) {
+            logger.error("Error fetching address details: Address $addressId not found. ${e.message}")
+            return "Address not found" // Or use localized message
+        }
+        catch (e: Exception) {
+            logger.error("Error fetching address details for address $addressId, chat $chatId: ${e.message}", e)
+            return "Address not available" // Or use localized message
         }
     }
 

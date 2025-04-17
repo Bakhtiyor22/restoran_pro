@@ -239,7 +239,7 @@ data class OrderDTO(
     val orderDate: LocalDateTime,
     val totalAmount: BigDecimal,
     val orderItems: List<OrderItemDTO>,
-    val addressId: AddressDTO
+    val addressId: Long,
 )
 
 fun Order.toDto() = OrderDTO(
@@ -251,7 +251,7 @@ fun Order.toDto() = OrderDTO(
     orderDate = this.orderDate.atStartOfDay(),
     totalAmount = totalAmount,
     orderItems = this.orderItems.map { it.toDto() },
-    addressId = address.toDto()
+    addressId = this.address.id!!
 )
 
 fun OrderItem.toDto() = OrderItemDTO(
@@ -345,3 +345,9 @@ data class CartItemDTO(
     val quantity: Int
 )
 
+data class GeocodingResult(
+    val fullAddress: String?,
+    val city: String?,
+    val street: String?,
+    // Add other components as needed (country, house number, etc.)
+)

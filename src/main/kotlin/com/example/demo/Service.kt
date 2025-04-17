@@ -1,6 +1,7 @@
 package com.example.demo
 
 import com.fasterxml.jackson.core.type.TypeReference
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.itextpdf.text.*
 import com.itextpdf.text.pdf.PdfPCell
@@ -38,7 +39,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
 import org.springframework.context.annotation.Primary
 import jakarta.annotation.PreDestroy
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.web.client.RestTemplate
 
 interface OTPService {
     fun generateOTP(phoneNumber: String): Long
@@ -207,6 +210,10 @@ interface CartService {
 interface LocalizedMessageService {
     fun getMessage(key: MessageKey, chatId: Long, vararg args: Any): String
     fun getMessage(key: MessageKey, locale: Locale, vararg args: Any): String
+}
+
+interface GeocodingService {
+    fun getAddressFromCoordinates(latitude: Double, longitude: Double): GeocodingResult?
 }
 
 @Service
@@ -890,12 +897,16 @@ class OrderServiceImpl(
         return savedOrder.toDto()
     }
 
+    @Transactional // Ensure transaction is active for potential lazy loads if needed elsewhere
     override fun getOrderById(orderId: Long): OrderDTO {
-        return orderRepository.findByIdAndDeletedFalse(orderId)?.toDto() ?: throw ResourceNotFoundException(orderId)
+        val order = orderRepository.findByIdWithItemsAndProducts(orderId)
+            ?: throw ResourceNotFoundException(orderId)
+        return order.toDto()
     }
 
+    @Transactional
     override fun getCustomerOrders(customerId: Long, pageable: Pageable): Page<OrderDTO> {
-        return orderRepository.findByUserIdAndDeletedFalse(customerId, pageable).map { it.toDto() }
+        return orderRepository.findByCustomerIdWithItems(customerId, pageable).map { it.toDto() }
     }
 
     override fun getRestaurantOrders(restaurantId: Long, pageable: Pageable): Page<OrderDTO> {
@@ -1702,8 +1713,8 @@ class InMemoryStateManager(
         userData[key] = value
     }
 
-    fun clearTemporaryData(chatId: Long) {
-        temporaryData.remove(chatId)
+    fun clearTemporaryData(chatId: Long, key: String?=null) {
+        temporaryData[chatId]?.remove(key)
     }
 
     fun getUserLocale(chatId: Long): Locale {
@@ -1718,7 +1729,6 @@ class InMemoryStateManager(
     fun syncCriticalDataToDatabase() {
         logger.info("Syncing critical user data to database")
         try {
-            // Only sync verified users and their critical data
             userCache.forEach { (chatId, user) ->
                 val locale = userLocales[chatId]
                 if (locale != null) {
@@ -1773,6 +1783,100 @@ class InMemoryStateManager(
             } catch (e: Exception) {
                 mutableMapOf()
             }
+        }
+    }
+}
+
+@Service
+class GeocodingServiceImpl(
+    private val restTemplate: RestTemplate,
+    private val objectMapper: ObjectMapper,
+    @Value("\${geocoding.provider}") private val provider: String,
+    @Value("\${geocoding.api.key}") private val apiKey: String
+) : GeocodingService {
+
+    private val logger = LoggerFactory.getLogger(javaClass)
+
+    override fun getAddressFromCoordinates(latitude: Double, longitude: Double): GeocodingResult? {
+        val url = buildApiUrl(latitude, longitude)
+        return try {
+            val response = restTemplate.getForObject(url, String::class.java)
+            if (response != null) {
+                parseResponse(response)
+            } else {
+                logger.warn("Received null response from geocoding API for $latitude, $longitude")
+                null
+            }
+        } catch (e: Exception) {
+            logger.error("Error calling Geocoding API ($provider) for $latitude, $longitude: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun buildApiUrl(latitude: Double, longitude: Double): String {
+        val coordinates = "$longitude,$latitude"
+        return when (provider.lowercase()) {
+            "yandex" -> "https://geocode-maps.yandex.ru/1.x/?apikey=$apiKey&format=json&geocode=$coordinates&lang=en_US" // Adjust lang if needed
+            "google" -> "https://maps.googleapis.com/maps/api/geocode/json?latlng=$latitude,$longitude&key=$apiKey"
+            else -> throw IllegalArgumentException("Unsupported geocoding provider: $provider")
+        }
+    }
+
+    private fun parseResponse(responseBody: String): GeocodingResult? {
+        try {
+            val rootNode: JsonNode = objectMapper.readTree(responseBody)
+
+            // --- Parsing logic depends HEAVILY on the API provider's JSON structure ---
+            // --- You MUST inspect the actual JSON response from the API ---
+
+            if (provider.lowercase() == "yandex") {
+                // Example parsing for Yandex (structure might change!)
+                val featureMember = rootNode.path("response").path("GeoObjectCollection").path("featureMember")
+                if (featureMember.isArray && featureMember.size() > 0) {
+                    val firstResult = featureMember.get(0).path("GeoObject")
+                    val fullAddress = firstResult.path("metaDataProperty").path("GeocoderMetaData").path("text").asText(null)
+                    val components = firstResult.path("metaDataProperty").path("GeocoderMetaData").path("Address").path("Components")
+                    var city: String? = null
+                    var street: String? = null
+                    components.forEach { component ->
+                        when (component.path("kind").asText()) {
+                            "locality" -> city = component.path("name").asText(null)
+                            "street" -> street = component.path("name").asText(null)
+                        }
+                    }
+                    return GeocodingResult(fullAddress, city, street)
+                }
+            } else if (provider.lowercase() == "google") {
+                // Example parsing for Google (structure might change!)
+                val results = rootNode.path("results")
+                if (results.isArray && results.size() > 0) {
+                    val firstResult = results.get(0)
+                    val fullAddress = firstResult.path("formatted_address").asText(null)
+                    val components = firstResult.path("address_components")
+                    var city: String? = null
+                    var street: String? = null // Google often combines street name and number
+                    components.forEach { component ->
+                        val types = component.path("types")
+                        if (types.isArray) {
+                            types.forEach { typeNode ->
+                                val type = typeNode.asText()
+                                if (type == "locality") { // City/Town
+                                    city = component.path("long_name").asText(null)
+                                } else if (type == "route") { // Street name
+                                    street = component.path("long_name").asText(null)
+                                }
+                            }
+                        }
+                    }
+                    // Combine street name and number if needed, or adjust based on 'route' and 'street_number' types
+                    return GeocodingResult(fullAddress, city, street ?: fullAddress?.substringBefore(",")) // Basic fallback for street
+                }
+            }
+            logger.warn("Could not parse meaningful address from $provider response.")
+            return null
+        } catch (e: Exception) {
+            logger.error("Error parsing geocoding response: ${e.message}", e)
+            return null
         }
     }
 }

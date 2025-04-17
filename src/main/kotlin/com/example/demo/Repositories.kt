@@ -121,6 +121,15 @@ interface OrderRepository : BaseRepository<Order> {
 
     @Query("SELECT o.user, COUNT(o) as orderCount, SUM(o.totalAmount) as totalSpent FROM Order o GROUP BY o.user ORDER BY totalSpent DESC")
     fun findTopBuyers(pageable: Pageable): List<Array<Any>>
+
+    // Add this method to fetch items eagerly
+    @Query("SELECT o FROM Order o LEFT JOIN FETCH o.orderItems oi LEFT JOIN FETCH oi.product WHERE o.id = :id AND o.deleted = false")
+    fun findByIdWithItemsAndProducts(@Param("id") id: Long): Order?
+
+    // Your existing method for customer orders (already fetches items)
+    @Query("SELECT o FROM Order o LEFT JOIN FETCH o.orderItems oi LEFT JOIN FETCH oi.product p LEFT JOIN FETCH p.category WHERE o.user.id = :customerId AND o.deleted = false ORDER BY o.orderDate DESC")
+    fun findByCustomerIdWithItems(@Param("customerId") customerId: Long, pageable: Pageable): Page<Order>
+
 }
 
 interface OrderItemRepository : BaseRepository<OrderItem> {

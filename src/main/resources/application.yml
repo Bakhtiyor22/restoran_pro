@@ -43,3 +43,8 @@ telegram:
   bot:
     name: ${Bot_Name}
     token: ${Bot_Token}
+geocoding:
+  provider: yandex # Specify Google as the provider
+  api:
+    key: ${YANDEX_GEOCODING_API_KEY} # Use an environment variable for the key
+
