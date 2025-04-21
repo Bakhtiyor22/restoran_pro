@@ -1522,17 +1522,13 @@ class CartServiceImpl(
         try {
             logger.debug("Getting cart for chatId: {}", chatId)
 
-            // Find user by Telegram chatId
             val user = userRepository.findByTelegramChatId(chatId)
                 ?: throw ResourceNotFoundException("User not found for chatId: $chatId")
 
-            // Get or create cart with items eagerly fetched
             val cart = cartRepository.findByUserIdAndDeletedFalse(user.id!!) ?: return CartDTO(emptyList())
 
-            // Use Hibernate.initialize to force initialization of the items collection
             Hibernate.initialize(cart.items)
 
-            // Map to CartDTO
             return CartDTO(
                 items = cart.items.map { item ->
                     CartItemDTO(
